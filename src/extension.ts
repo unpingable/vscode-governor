@@ -7,8 +7,8 @@
  */
 
 import * as vscode from "vscode";
-import { checkFile, checkStdin, fetchState, getIntent, setIntent, clearIntent, runCodeCompare, GovernorOptions, SetIntentOptions } from "./governor/client";
-import type { CheckResult, CheckInput, GovernorViewModelV2, IntentResult } from "./governor/types";
+import { checkFile, checkStdin, fetchState, getIntent, setIntent, clearIntent, runCodeCompare, runSelfcheck, getReceiptDetail, GovernorOptions, SetIntentOptions } from "./governor/client";
+import type { CheckResult, CheckInput, GovernorViewModelV2, IntentResult, SelfcheckResult } from "./governor/types";
 import { DiagnosticProvider } from "./diagnostics/provider";
 import { GovernorTreeProvider } from "./views/governorTree";
 import { GovernorHoverProvider } from "./hovers/provider";
@@ -20,6 +20,7 @@ let diagnosticProvider: DiagnosticProvider;
 let statusBarItem: vscode.StatusBarItem;
 let realtimeChecker: RealtimeChecker | null = null;
 let hoverProvider: GovernorHoverProvider | null = null;
+let selfcheckStatusBar: vscode.StatusBarItem;
 let currentIntent: IntentResult | null = null;
 let treeProviderRef: GovernorTreeProvider | null = null;
 
@@ -59,6 +60,43 @@ async function refreshIntent(): Promise<void> {
     currentIntent = await getIntent(getOptions());
   } catch {
     currentIntent = null;
+  }
+}
+
+function updateSelfcheckStatusBar(result: SelfcheckResult | null): void {
+  if (!result) {
+    selfcheckStatusBar.text = "$(question) Selfcheck: ?";
+    selfcheckStatusBar.tooltip = "Selfcheck unavailable";
+    selfcheckStatusBar.backgroundColor = undefined;
+    selfcheckStatusBar.show();
+    return;
+  }
+
+  if (result.overall === "ok") {
+    selfcheckStatusBar.text = "$(verified) Selfcheck: OK";
+    selfcheckStatusBar.tooltip = result.items.map((i) => `${i.name}: ${i.status}`).join("\n");
+    selfcheckStatusBar.backgroundColor = undefined;
+  } else {
+    const failCount = result.items.filter((i) => i.status === "fail").length;
+    const warnCount = result.items.filter((i) => i.status === "warn").length;
+    selfcheckStatusBar.text = `$(warning) Selfcheck: ${failCount}F/${warnCount}W`;
+    selfcheckStatusBar.tooltip = result.items
+      .filter((i) => i.status !== "ok")
+      .map((i) => `[${i.status.toUpperCase()}] ${i.name}: ${i.detail}`)
+      .join("\n");
+    selfcheckStatusBar.backgroundColor = failCount > 0
+      ? new vscode.ThemeColor("statusBarItem.errorBackground")
+      : new vscode.ThemeColor("statusBarItem.warningBackground");
+  }
+  selfcheckStatusBar.show();
+}
+
+async function runSelfcheckRefresh(): Promise<void> {
+  try {
+    const result = await runSelfcheck(getOptions());
+    updateSelfcheckStatusBar(result);
+  } catch {
+    updateSelfcheckStatusBar(null);
   }
 }
 
@@ -157,6 +195,15 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.tooltip = "Agent Governor";
   statusBarItem.show();
 
+  selfcheckStatusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    99
+  );
+  selfcheckStatusBar.command = "governor.showSelfcheck";
+  selfcheckStatusBar.text = "$(question) Selfcheck: ?";
+  selfcheckStatusBar.tooltip = "Governor Selfcheck";
+  selfcheckStatusBar.show();
+
   // Tree view (Phase V2)
   const treeProvider = new GovernorTreeProvider(outputChannel, getOptions);
   treeProviderRef = treeProvider;
@@ -198,6 +245,7 @@ export function activate(context: vscode.ExtensionContext): void {
     outputChannel,
     diagnosticProvider,
     statusBarItem,
+    selfcheckStatusBar,
     treeView,
     treeProvider,
     hoverProvider,
@@ -349,6 +397,33 @@ export function activate(context: vscode.ExtensionContext): void {
         outputChannel.appendLine(`Compare error: ${msg}`);
         vscode.window.showErrorMessage(`Governor compare failed: ${msg}`);
       }
+    }),
+    vscode.commands.registerCommand("governor.showSelfcheck", async () => {
+      try {
+        const result = await runSelfcheck(getOptions(), { full: true });
+        outputChannel.appendLine("\n=== Selfcheck (Full) ===");
+        for (const item of result.items) {
+          outputChannel.appendLine(`[${item.status.toUpperCase()}] ${item.name}: ${item.detail}`);
+        }
+        outputChannel.appendLine(`Overall: ${result.overall}`);
+        outputChannel.show();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`Selfcheck error: ${msg}`);
+        outputChannel.show();
+      }
+    }),
+    vscode.commands.registerCommand("governor.showReceiptDetail", async (receiptId: string) => {
+      try {
+        const receipt = await getReceiptDetail(getOptions(), receiptId, true);
+        outputChannel.appendLine("\n=== Receipt Detail ===");
+        outputChannel.appendLine(JSON.stringify(receipt, null, 2));
+        outputChannel.show();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`Receipt detail error: ${msg}`);
+        outputChannel.show();
+      }
     })
   );
 
@@ -369,9 +444,10 @@ export function activate(context: vscode.ExtensionContext): void {
         const msg = err instanceof Error ? err.message : String(err);
         outputChannel.appendLine(`Auto-check error: ${msg}`);
       }
-      // Refresh tree view after check
+      // Refresh tree view and selfcheck after check
       treeProvider.refresh();
       hoverProvider?.invalidateCache();
+      runSelfcheckRefresh();
     })
   );
 
@@ -382,11 +458,12 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // Initial tree load and intent fetch
+  // Initial tree load, intent fetch, and selfcheck
   treeProvider.refresh();
   refreshIntent();
+  runSelfcheckRefresh();
 
-  outputChannel.appendLine("Agent Governor extension activated (Phase V5 - Code Autopilot).");
+  outputChannel.appendLine("Agent Governor extension activated (Phase V6 - Selfcheck + Receipts).");
 }
 
 export function deactivate(): void {

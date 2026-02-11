@@ -11,11 +11,15 @@ const mockFetchState = jest.fn();
 const mockGetIntent = jest.fn();
 const mockListOverrides = jest.fn();
 const mockRunCodeCompare = jest.fn();
+const mockGetReceipts = jest.fn();
+const mockRunSelfcheck = jest.fn();
 jest.mock("../../governor/client", () => ({
   fetchState: (...args: unknown[]) => mockFetchState(...args),
   getIntent: (...args: unknown[]) => mockGetIntent(...args),
   listOverrides: (...args: unknown[]) => mockListOverrides(...args),
   runCodeCompare: (...args: unknown[]) => mockRunCodeCompare(...args),
+  getReceipts: (...args: unknown[]) => mockGetReceipts(...args),
+  runSelfcheck: (...args: unknown[]) => mockRunSelfcheck(...args),
   GovernorOptions: {},
 }));
 
@@ -173,10 +177,14 @@ describe("GovernorTreeProvider", () => {
     mockGetIntent.mockReset();
     mockListOverrides.mockReset();
     mockRunCodeCompare.mockReset();
-    // Default mocks for intent/overrides/compare (always succeed with defaults)
+    mockGetReceipts.mockReset();
+    mockRunSelfcheck.mockReset();
+    // Default mocks for intent/overrides/compare/receipts/selfcheck (always succeed with defaults)
     mockGetIntent.mockResolvedValue(defaultIntent());
     mockListOverrides.mockResolvedValue([]);
     mockRunCodeCompare.mockRejectedValue(new Error("no compare data"));
+    mockGetReceipts.mockResolvedValue([]);
+    mockRunSelfcheck.mockRejectedValue(new Error("selfcheck not available"));
     provider = new GovernorTreeProvider(createOutputChannel(), () => defaultOpts);
   });
 
@@ -239,10 +247,10 @@ describe("GovernorTreeProvider", () => {
       await provider.refresh();
     });
 
-    it("shows all 9 root nodes", () => {
+    it("shows all 10 root nodes", () => {
       const roots = provider.getChildren();
-      // problems, intent, decisions, claims, evidence, execution, session, regime, stability (reordered for UX)
-      expect(roots).toHaveLength(9);
+      // problems, intent, decisions, claims, evidence, execution, receipts, session, regime, stability
+      expect(roots).toHaveLength(10);
     });
 
     it("session node has mode and authority children", () => {
@@ -620,5 +628,132 @@ describe("GovernorTreeProvider", () => {
         expect(problemsNode.children![0].icon).toBe(expectedIcon);
       });
     }
+  });
+
+  describe("receipts section", () => {
+    it("shows empty state when no receipts", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetReceipts.mockResolvedValue([]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const receipts = roots.find((r) => r.kind === "receipts")!;
+      expect(receipts).toBeDefined();
+      expect(receipts.label).toBe("Receipts (0)");
+      expect(receipts.children).toHaveLength(1);
+      expect(receipts.children![0].kind).toBe("receipt-empty");
+      expect(receipts.children![0].label).toBe("No receipts yet");
+    });
+
+    it("shows receipt items with verdict badges", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetReceipts.mockResolvedValue([
+        {
+          receipt_id: "abcdef1234567890",
+          schema_version: 1,
+          timestamp: "2025-01-01T00:00:00Z",
+          gate: "evidence_gate",
+          verdict: "pass",
+          subject_hash: "s1",
+          evidence_hash: "e1",
+          policy_hash: "p1",
+        },
+        {
+          receipt_id: "xyz789abcdef0123",
+          schema_version: 1,
+          timestamp: "2025-01-01T00:01:00Z",
+          gate: "pre_commit",
+          verdict: "block",
+          subject_hash: "s2",
+          evidence_hash: "e2",
+          policy_hash: "p2",
+        },
+      ]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const receipts = roots.find((r) => r.kind === "receipts")!;
+      expect(receipts.label).toBe("Receipts (2)");
+      expect(receipts.children).toHaveLength(2);
+
+      // First receipt: pass verdict
+      expect(receipts.children![0].label).toBe("[PASS] evidence_gate");
+      expect(receipts.children![0].icon).toBe("check");
+      expect(receipts.children![0].description).toContain("abcdef12");
+
+      // Second receipt: block verdict
+      expect(receipts.children![1].label).toBe("[BLOCK] pre_commit");
+      expect(receipts.children![1].icon).toBe("error");
+    });
+
+    it("shows warn verdict with warning icon", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetReceipts.mockResolvedValue([
+        {
+          receipt_id: "warn123456789000",
+          schema_version: 1,
+          timestamp: "2025-01-01T00:00:00Z",
+          gate: "continuity_checker",
+          verdict: "warn",
+          subject_hash: "s1",
+          evidence_hash: "e1",
+          policy_hash: "p1",
+        },
+      ]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const receipts = roots.find((r) => r.kind === "receipts")!;
+      expect(receipts.children![0].label).toBe("[WARN] continuity_checker");
+      expect(receipts.children![0].icon).toBe("warning");
+    });
+
+    it("includes detail JSON for click-to-show", async () => {
+      const receiptData = {
+        receipt_id: "abc123",
+        schema_version: 1,
+        timestamp: "2025-01-01T00:00:00Z",
+        gate: "evidence_gate",
+        verdict: "pass",
+        subject_hash: "s1",
+        evidence_hash: "e1",
+        policy_hash: "p1",
+      };
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetReceipts.mockResolvedValue([receiptData]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const receipts = roots.find((r) => r.kind === "receipts")!;
+      expect(receipts.children![0].detail).toBe(JSON.stringify(receiptData, null, 2));
+    });
+  });
+
+  describe("selfcheck accessor", () => {
+    it("returns null before refresh", () => {
+      expect(provider.getSelfcheck()).toBeNull();
+    });
+
+    it("returns selfcheck result after successful refresh", async () => {
+      const selfcheckResult = {
+        items: [
+          { name: "governor_dir", status: "ok", detail: ".governor exists" },
+        ],
+        overall: "ok" as const,
+      };
+      mockFetchState.mockResolvedValue(emptyState());
+      mockRunSelfcheck.mockResolvedValue(selfcheckResult);
+      await provider.refresh();
+
+      expect(provider.getSelfcheck()).toEqual(selfcheckResult);
+    });
+
+    it("returns null when selfcheck fails", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockRunSelfcheck.mockRejectedValue(new Error("selfcheck unavailable"));
+      await provider.refresh();
+
+      expect(provider.getSelfcheck()).toBeNull();
+    });
   });
 });

@@ -13,8 +13,8 @@ jest.mock("child_process", () => ({
   spawn: mockSpawn,
 }));
 
-import { checkFile, checkStdin } from "../../governor/client";
-import type { CheckResult } from "../../governor/types";
+import { checkFile, checkStdin, runSelfcheck, getReceipts, getReceiptDetail } from "../../governor/client";
+import type { CheckResult, SelfcheckResult, GateReceiptView } from "../../governor/types";
 
 function createMockProcess(
   stdoutData: string,
@@ -185,5 +185,172 @@ describe("checkStdin", () => {
       expect.anything(),
       expect.objectContaining({ cwd: "/home" })
     );
+  });
+});
+
+describe("runSelfcheck", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+  });
+
+  const selfcheckResult: SelfcheckResult = {
+    items: [
+      { name: "governor_dir", status: "ok", detail: ".governor exists" },
+      { name: "pre_commit_hook", status: "warn", detail: "hook not installed" },
+    ],
+    overall: "ok",
+  };
+
+  it("spawns governor selfcheck with correct args", async () => {
+    const proc = createMockProcess(JSON.stringify(selfcheckResult), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await runSelfcheck(defaultOpts);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["selfcheck", "--json"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("passes --full flag when requested", async () => {
+    const proc = createMockProcess(JSON.stringify(selfcheckResult), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await runSelfcheck(defaultOpts, { full: true });
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["selfcheck", "--json", "--full"],
+      expect.anything()
+    );
+  });
+
+  it("parses selfcheck result", async () => {
+    const proc = createMockProcess(JSON.stringify(selfcheckResult), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await runSelfcheck(defaultOpts);
+    expect(result.overall).toBe("ok");
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0].name).toBe("governor_dir");
+  });
+});
+
+describe("getReceipts", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+  });
+
+  const receipts: GateReceiptView[] = [
+    {
+      receipt_id: "abc123",
+      schema_version: 1,
+      timestamp: "2025-01-01T00:00:00Z",
+      gate: "evidence_gate",
+      verdict: "pass",
+      subject_hash: "s1",
+      evidence_hash: "e1",
+      policy_hash: "p1",
+    },
+    {
+      receipt_id: "def456",
+      schema_version: 1,
+      timestamp: "2025-01-01T00:01:00Z",
+      gate: "pre_commit",
+      verdict: "block",
+      subject_hash: "s2",
+      evidence_hash: "e2",
+      policy_hash: "p2",
+    },
+  ];
+
+  it("spawns governor receipts with correct args", async () => {
+    const proc = createMockProcess(JSON.stringify(receipts), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getReceipts(defaultOpts);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["receipts", "--json"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("passes filter options", async () => {
+    const proc = createMockProcess(JSON.stringify(receipts), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getReceipts(defaultOpts, { gate: "evidence_gate", verdict: "pass", last: 10 });
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["receipts", "--json", "--gate", "evidence_gate", "--verdict", "pass", "--last", "10"],
+      expect.anything()
+    );
+  });
+
+  it("parses receipt array", async () => {
+    const proc = createMockProcess(JSON.stringify(receipts), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await getReceipts(defaultOpts);
+    expect(result).toHaveLength(2);
+    expect(result[0].gate).toBe("evidence_gate");
+    expect(result[1].verdict).toBe("block");
+  });
+});
+
+describe("getReceiptDetail", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+  });
+
+  const receipt: GateReceiptView = {
+    receipt_id: "abc123",
+    schema_version: 1,
+    timestamp: "2025-01-01T00:00:00Z",
+    gate: "evidence_gate",
+    verdict: "pass",
+    subject_hash: "s1",
+    evidence_hash: "e1",
+    policy_hash: "p1",
+  };
+
+  it("spawns with --id flag", async () => {
+    const proc = createMockProcess(JSON.stringify(receipt), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getReceiptDetail(defaultOpts, "abc123");
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["receipts", "--id", "abc123", "--json"],
+      expect.anything()
+    );
+  });
+
+  it("includes --evidence flag when requested", async () => {
+    const proc = createMockProcess(JSON.stringify({ ...receipt, evidence: { key: "val" } }), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getReceiptDetail(defaultOpts, "abc123", true);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["receipts", "--id", "abc123", "--json", "--evidence"],
+      expect.anything()
+    );
+  });
+
+  it("parses single receipt", async () => {
+    const proc = createMockProcess(JSON.stringify(receipt), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await getReceiptDetail(defaultOpts, "abc123");
+    expect(result.receipt_id).toBe("abc123");
+    expect(result.gate).toBe("evidence_gate");
   });
 });

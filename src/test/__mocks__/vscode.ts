@@ -111,11 +111,12 @@ export const window = {
       dispose() {},
     };
   },
-  createStatusBarItem() {
+  createStatusBarItem(_alignment?: StatusBarAlignment, _priority?: number) {
     return {
       text: "",
       tooltip: "",
       command: "",
+      backgroundColor: undefined as { id: string } | undefined,
       show() {},
       hide() {},
       dispose() {},

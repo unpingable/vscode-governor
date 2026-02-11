@@ -56,6 +56,40 @@ export interface CodeDivergenceReportView {
   tier_reasons: string[];
 }
 
+// =========================================================================
+// Selfcheck types (deployment health, `governor selfcheck --json`)
+// =========================================================================
+
+export interface SelfcheckItem {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  detail: string;
+}
+
+export interface SelfcheckResult {
+  items: SelfcheckItem[];
+  overall: "ok" | "degraded";
+}
+
+// =========================================================================
+// Gate Receipt types (`governor receipts --json`)
+// =========================================================================
+
+export interface GateReceiptView {
+  receipt_id: string;
+  schema_version: number;
+  timestamp: string;
+  gate: string;
+  verdict: "pass" | "warn" | "block";
+  subject_hash: string;
+  evidence_hash: string;
+  policy_hash: string;
+  principal_id?: string;
+  tenant_id?: string;
+  auth_method?: string;
+  evidence?: Record<string, unknown>;
+}
+
 export interface CheckResult {
   status: "pass" | "warn" | "error";
   findings: CheckFinding[];

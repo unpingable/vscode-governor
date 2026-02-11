@@ -6,7 +6,7 @@
  */
 
 import * as vscode from "vscode";
-import { fetchState, getIntent, listOverrides, runCodeCompare, GovernorOptions } from "../governor/client";
+import { fetchState, getIntent, listOverrides, runCodeCompare, getReceipts, runSelfcheck, GovernorOptions } from "../governor/client";
 import type {
   GovernorViewModelV2,
   DecisionView,
@@ -18,6 +18,8 @@ import type {
   IntentResult,
   OverrideView,
   CodeDivergenceReportView,
+  GateReceiptView,
+  SelfcheckResult,
 } from "../governor/types";
 
 // =========================================================================
@@ -89,6 +91,8 @@ export class GovernorTreeProvider
   private intent: IntentResult | null = null;
   private overrides: OverrideView[] = [];
   private compareReport: CodeDivergenceReportView | null = null;
+  private receipts: GateReceiptView[] = [];
+  private selfcheck: SelfcheckResult | null = null;
   private error: string | null = null;
 
   constructor(
@@ -103,6 +107,13 @@ export class GovernorTreeProvider
     return this.intent;
   }
 
+  /**
+   * Get the current selfcheck result (for status bar integration).
+   */
+  getSelfcheck(): SelfcheckResult | null {
+    return this.selfcheck;
+  }
+
   dispose(): void {
     this._onDidChangeTreeData.dispose();
   }
@@ -111,17 +122,21 @@ export class GovernorTreeProvider
     try {
       // Fetch all state in parallel
       const opts = this.getOptions();
-      const [stateResult, intentResult, overridesResult, compareResult] = await Promise.allSettled([
+      const [stateResult, intentResult, overridesResult, compareResult, receiptsResult, selfcheckResult] = await Promise.allSettled([
         fetchState(opts),
         getIntent(opts),
         listOverrides(opts),
         runCodeCompare(opts),
+        getReceipts(opts, { last: 20 }),
+        runSelfcheck(opts),
       ]);
 
       this.state = stateResult.status === "fulfilled" ? stateResult.value : null;
       this.intent = intentResult.status === "fulfilled" ? intentResult.value : null;
       this.overrides = overridesResult.status === "fulfilled" ? overridesResult.value : [];
       this.compareReport = compareResult.status === "fulfilled" ? compareResult.value : null;
+      this.receipts = receiptsResult.status === "fulfilled" ? receiptsResult.value : [];
+      this.selfcheck = selfcheckResult.status === "fulfilled" ? selfcheckResult.value : null;
 
       // Only set error if state fetch failed (intent/overrides are optional)
       this.error = stateResult.status === "rejected"
@@ -132,6 +147,8 @@ export class GovernorTreeProvider
       this.intent = null;
       this.overrides = [];
       this.compareReport = null;
+      this.receipts = [];
+      this.selfcheck = null;
       this.error = err instanceof Error ? err.message : String(err);
     }
     this._onDidChangeTreeData.fire();
@@ -224,6 +241,9 @@ export class GovernorTreeProvider
     if (executionNode) {
       nodes.push(executionNode);
     }
+
+    // Receipts section (audit trail)
+    nodes.push(this.buildReceiptsNode());
 
     // Advanced section (collapsed)
     nodes.push(this.buildSessionNode(this.state));
@@ -530,6 +550,45 @@ export class GovernorTreeProvider
       icon: "graph-line",
       children,
       detail: s.stability ? JSON.stringify(s.stability, null, 2) : undefined,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Gate Receipts section
+  // -----------------------------------------------------------------------
+
+  private static readonly VERDICT_ICONS: Record<string, string> = {
+    pass: "check",
+    warn: "warning",
+    block: "error",
+  };
+
+  buildReceiptsNode(): TreeNodeData {
+    const children: TreeNodeData[] = this.receipts.map((r: GateReceiptView) => ({
+      kind: "receipt",
+      label: `[${r.verdict.toUpperCase()}] ${r.gate}`,
+      description: `${r.receipt_id.slice(0, 8)}… ${r.timestamp}`,
+      collapsible: false,
+      icon: GovernorTreeProvider.VERDICT_ICONS[r.verdict] ?? "question",
+      detail: JSON.stringify(r, null, 2),
+    }));
+
+    if (children.length === 0) {
+      children.push({
+        kind: "receipt-empty",
+        label: "No receipts yet",
+        description: "Gate decisions will appear here",
+        collapsible: false,
+        icon: "info",
+      });
+    }
+
+    return {
+      kind: "receipts",
+      label: `Receipts (${this.receipts.length})`,
+      collapsible: true,
+      icon: "output",
+      children,
     };
   }
 

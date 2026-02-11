@@ -3,7 +3,7 @@
  */
 
 import { spawn } from "child_process";
-import type { CheckResult, CheckInput, GovernorViewModelV2, IntentResult, OverrideView, CodeDivergenceReportView } from "./types";
+import type { CheckResult, CheckInput, GovernorViewModelV2, IntentResult, OverrideView, CodeDivergenceReportView, SelfcheckResult, GateReceiptView } from "./types";
 
 const TIMEOUT_MS = 30_000;
 
@@ -250,6 +250,76 @@ export function runCodeCompare(
   }
   args.push("--json");
   return runGovernorGeneric<CodeDivergenceReportView>(opts, args);
+}
+
+// =========================================================================
+// Selfcheck: deployment health
+// =========================================================================
+
+export interface SelfcheckOptions {
+  full?: boolean;
+}
+
+/**
+ * Run governor selfcheck (deployment health).
+ * Calls `governor selfcheck --json [--full]`.
+ */
+export function runSelfcheck(
+  opts: GovernorOptions,
+  selfcheckOpts: SelfcheckOptions = {}
+): Promise<SelfcheckResult> {
+  const args = ["selfcheck", "--json"];
+  if (selfcheckOpts.full) {
+    args.push("--full");
+  }
+  return runGovernorGeneric<SelfcheckResult>(opts, args);
+}
+
+// =========================================================================
+// Gate Receipts: audit trail
+// =========================================================================
+
+export interface ReceiptFilterOptions {
+  gate?: string;
+  verdict?: string;
+  last?: number;
+}
+
+/**
+ * List gate receipts.
+ * Calls `governor receipts --json [--gate X --verdict Y --last N]`.
+ */
+export function getReceipts(
+  opts: GovernorOptions,
+  filters: ReceiptFilterOptions = {}
+): Promise<GateReceiptView[]> {
+  const args = ["receipts", "--json"];
+  if (filters.gate) {
+    args.push("--gate", filters.gate);
+  }
+  if (filters.verdict) {
+    args.push("--verdict", filters.verdict);
+  }
+  if (filters.last !== undefined) {
+    args.push("--last", String(filters.last));
+  }
+  return runGovernorGeneric<GateReceiptView[]>(opts, args);
+}
+
+/**
+ * Get a single receipt by ID, optionally with evidence.
+ * Calls `governor receipts --id X [--evidence] --json`.
+ */
+export function getReceiptDetail(
+  opts: GovernorOptions,
+  receiptId: string,
+  includeEvidence = false
+): Promise<GateReceiptView> {
+  const args = ["receipts", "--id", receiptId, "--json"];
+  if (includeEvidence) {
+    args.push("--evidence");
+  }
+  return runGovernorGeneric<GateReceiptView>(opts, args);
 }
 
 export { GovernorOptions };

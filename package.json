@@ -2,7 +2,7 @@
   "name": "vscode-governor",
   "displayName": "Agent Governor",
   "description": "Security and continuity checking for agentic coding tools",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "publisher": "agent-governor",
   "license": "Apache-2.0",
   "engines": {
@@ -88,6 +88,14 @@
       {
         "command": "governor.showReceiptDetail",
         "title": "Governor: Show Receipt Detail"
+      },
+      {
+        "command": "governor.showCorrelator",
+        "title": "Governor: Show Correlator Status"
+      },
+      {
+        "command": "governor.runPreflight",
+        "title": "Governor: Run Preflight Checks"
       }
     ],
     "menus": {
@@ -125,7 +133,7 @@
         "governor.executablePath": {
           "type": "string",
           "default": "governor",
-          "description": "Path to the governor CLI executable"
+          "description": "Path to the governor CLI executable (absolute path recommended for Remote SSH/WSL)"
         },
         "governor.checkOnSave": {
           "type": "boolean",
@@ -182,6 +190,33 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically run code compare after interferometry runs"
+        },
+        "governor.preflight.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run preflight checks when workspace opens"
+        },
+        "governor.preflight.agent": {
+          "type": "string",
+          "default": "claude",
+          "description": "Agent type for preflight checks (claude, codex, etc.)"
+        },
+        "governor.correlator.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable correlator status polling"
+        },
+        "governor.correlator.pollIntervalMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 300000,
+          "description": "Correlator poll interval in milliseconds"
+        },
+        "governor.backgroundActivity.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for all background activity (preflight, correlator polling)"
         }
       }
     },

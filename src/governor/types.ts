@@ -329,6 +329,52 @@ export interface AutopilotProfile {
   retry_budget: number;
 }
 
+// =========================================================================
+// V7.0: Preflight types (`governor preflight --json`)
+// =========================================================================
+
+export interface PreflightCheck {
+  name: string;
+  status: "pass" | "fail" | "skip";
+  detail: string;
+}
+
+export interface PreflightResult {
+  checks: PreflightCheck[];
+  overall: "pass" | "fail";
+  agent: string;
+}
+
+// =========================================================================
+// V7.0: Correlator types (`governor correlator status --json`)
+// =========================================================================
+
+export interface KVector {
+  throughput: number;
+  fidelity: number;
+  authority: number;
+  cost: number;
+}
+
+export interface CaptureIndicator {
+  name: string;
+  active: boolean;
+  consecutive_windows: number;
+  threshold: number;
+}
+
+export interface CorrelatorStatus {
+  regime: string;
+  kvector: KVector;
+  capture_indicators: CaptureIndicator[];
+  is_captured: boolean;
+  last_observation: string | null;
+}
+
+// =========================================================================
+// Governor ViewModel V2 (canonical state)
+// =========================================================================
+
 export interface GovernorViewModelV2 {
   schema_version: "v2";
   generated_at: string;

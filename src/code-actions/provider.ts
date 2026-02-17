@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Code action provider — quick fixes from governor findings.
  *

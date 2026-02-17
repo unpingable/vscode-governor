@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * TreeDataProvider for the Governor side panel.
  *

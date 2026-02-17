@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * TypeScript interfaces mirroring Python governor.check types.
  *

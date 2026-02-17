@@ -2,7 +2,7 @@
   "name": "vscode-governor",
   "displayName": "Agent Governor",
   "description": "Security and continuity checking for agentic coding tools",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "agent-governor",
   "license": "Apache-2.0",
   "engines": {
@@ -12,7 +12,10 @@
     "Linters"
   ],
   "activationEvents": [
-    "workspaceContains:.governor"
+    "workspaceContains:.governor",
+    "onView:governorState",
+    "onCommand:governor.showScope",
+    "onCommand:governor.showScars"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -96,6 +99,14 @@
       {
         "command": "governor.runPreflight",
         "title": "Governor: Run Preflight Checks"
+      },
+      {
+        "command": "governor.showScope",
+        "title": "Governor: Show Scope Status and Grants"
+      },
+      {
+        "command": "governor.showScars",
+        "title": "Governor: Show Scar Status"
       }
     ],
     "menus": {
@@ -212,6 +223,20 @@
           "minimum": 5000,
           "maximum": 300000,
           "description": "Correlator poll interval in milliseconds"
+        },
+        "governor.correlator.captureThreshold": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Consecutive captured polls before Problems panel entry"
+        },
+        "governor.correlator.clearThreshold": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Consecutive OK polls before clearing capture alert"
         },
         "governor.backgroundActivity.enabled": {
           "type": "boolean",

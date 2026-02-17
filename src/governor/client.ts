@@ -11,6 +11,7 @@ import type {
   CheckResult, CheckInput, GovernorViewModelV2, IntentResult,
   OverrideView, CodeDivergenceReportView, SelfcheckResult,
   GateReceiptView, PreflightResult, CorrelatorStatus,
+  ScopeStatusView, ScopeGrantView, ScarListResult, FailureEventView,
 } from "./types";
 
 // =========================================================================
@@ -344,6 +345,30 @@ export class GovernorClient {
   }
 
   // =========================================================================
+  // V7.1: Scope
+  // =========================================================================
+
+  getScopeStatus(): Promise<ScopeStatusView> {
+    return this.execJson<ScopeStatusView>(["scope", "status", "--json"]);
+  }
+
+  getScopeGrants(): Promise<ScopeGrantView[]> {
+    return this.execJson<ScopeGrantView[]>(["scope", "grants", "--json"]);
+  }
+
+  // =========================================================================
+  // V7.1: Scars
+  // =========================================================================
+
+  getScarList(): Promise<ScarListResult> {
+    return this.execJson<ScarListResult>(["scar", "list", "--json"]);
+  }
+
+  getScarHistory(limit = 20): Promise<FailureEventView[]> {
+    return this.execJson<FailureEventView[]>(["scar", "history", "--json", "--limit", String(limit)]);
+  }
+
+  // =========================================================================
   // Cleanup
   // =========================================================================
 
@@ -424,4 +449,20 @@ export function getReceipts(opts: GovernorClientConfig, filters: ReceiptFilterOp
 
 export function getReceiptDetail(opts: GovernorClientConfig, receiptId: string, includeEvidence = false): Promise<import("./types").GateReceiptView> {
   return new GovernorClient(opts).getReceiptDetail(receiptId, includeEvidence);
+}
+
+export function getScopeStatus(opts: GovernorClientConfig): Promise<import("./types").ScopeStatusView> {
+  return new GovernorClient(opts).getScopeStatus();
+}
+
+export function getScopeGrants(opts: GovernorClientConfig): Promise<import("./types").ScopeGrantView[]> {
+  return new GovernorClient(opts).getScopeGrants();
+}
+
+export function getScarList(opts: GovernorClientConfig): Promise<import("./types").ScarListResult> {
+  return new GovernorClient(opts).getScarList();
+}
+
+export function getScarHistory(opts: GovernorClientConfig, limit = 20): Promise<import("./types").FailureEventView[]> {
+  return new GovernorClient(opts).getScarHistory(limit);
 }

@@ -162,13 +162,38 @@ export enum StatusBarAlignment {
 }
 
 export class Uri {
-  public readonly scheme = "file";
-  constructor(public readonly fsPath: string) {}
+  public readonly scheme: string;
+  public readonly authority: string;
+  public readonly path: string;
+  public readonly fsPath: string;
+
+  constructor(fsPathOrScheme: string, authority = "", path = "") {
+    if (authority || path) {
+      this.scheme = fsPathOrScheme;
+      this.authority = authority;
+      this.path = path;
+      this.fsPath = path;
+    } else {
+      this.scheme = "file";
+      this.authority = "";
+      this.path = fsPathOrScheme;
+      this.fsPath = fsPathOrScheme;
+    }
+  }
   toString() {
-    return this.fsPath;
+    if (this.scheme === "file") { return this.fsPath; }
+    return `${this.scheme}://${this.authority}${this.path}`;
   }
   static file(path: string) {
     return new Uri(path);
+  }
+  static parse(value: string) {
+    // Basic URI parsing for test purposes
+    const match = value.match(/^([a-z][a-z0-9+\-.]*):\/\/([^/]*)(\/.*)?$/);
+    if (match) {
+      return new Uri(match[1], match[2], match[3] || "");
+    }
+    return new Uri(value);
   }
 }
 

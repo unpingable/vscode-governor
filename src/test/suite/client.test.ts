@@ -14,8 +14,8 @@ jest.mock("child_process", () => ({
   spawn: mockSpawn,
 }));
 
-import { checkFile, checkStdin, runSelfcheck, getReceipts, getReceiptDetail } from "../../governor/client";
-import type { CheckResult, SelfcheckResult, GateReceiptView } from "../../governor/types";
+import { checkFile, checkStdin, runSelfcheck, getReceipts, getReceiptDetail, getScopeStatus, getScopeGrants, getScarList, getScarHistory } from "../../governor/client";
+import type { CheckResult, SelfcheckResult, GateReceiptView, ScopeStatusView, ScopeGrantView, ScarListResult, FailureEventView } from "../../governor/types";
 
 function createMockProcess(
   stdoutData: string,
@@ -353,5 +353,186 @@ describe("getReceiptDetail", () => {
     const result = await getReceiptDetail(defaultOpts, "abc123");
     expect(result.receipt_id).toBe("abc123");
     expect(result.gate).toBe("evidence_gate");
+  });
+});
+
+// =========================================================================
+// V7.1: getScopeStatus
+// =========================================================================
+
+describe("getScopeStatus", () => {
+  beforeEach(() => { mockSpawn.mockReset(); });
+
+  const scopeStatus: ScopeStatusView = {
+    run_scope: { region: "us-east-1" },
+    contracts_count: 2,
+    grants_count: 1,
+    escalation_count: 0,
+    scope_level: 1,
+  };
+
+  it("spawns with correct args", async () => {
+    const proc = createMockProcess(JSON.stringify(scopeStatus), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getScopeStatus(defaultOpts);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["scope", "status", "--json"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("parses scope status result", async () => {
+    const proc = createMockProcess(JSON.stringify(scopeStatus), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await getScopeStatus(defaultOpts);
+    expect(result.run_scope.region).toBe("us-east-1");
+    expect(result.contracts_count).toBe(2);
+  });
+});
+
+// =========================================================================
+// V7.1: getScopeGrants
+// =========================================================================
+
+describe("getScopeGrants", () => {
+  beforeEach(() => { mockSpawn.mockReset(); });
+
+  const grants: ScopeGrantView[] = [{
+    grant_id: "g1",
+    tool_id: "file_write",
+    axes: { region: "us-east-1" },
+    granted_at: "2025-01-01T00:00:00Z",
+    expires_at: null,
+    usage_count: 3,
+    write: true,
+    execute: false,
+  }];
+
+  it("spawns with correct args", async () => {
+    const proc = createMockProcess(JSON.stringify(grants), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getScopeGrants(defaultOpts);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["scope", "grants", "--json"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("parses grants array", async () => {
+    const proc = createMockProcess(JSON.stringify(grants), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await getScopeGrants(defaultOpts);
+    expect(result).toHaveLength(1);
+    expect(result[0].tool_id).toBe("file_write");
+    expect(result[0].write).toBe(true);
+  });
+});
+
+// =========================================================================
+// V7.1: getScarList
+// =========================================================================
+
+describe("getScarList", () => {
+  beforeEach(() => { mockSpawn.mockReset(); });
+
+  const scarList: ScarListResult = {
+    scars: [{ scar_id: "s1", region: "api", stiffness: 0.95, failure_kind: "", action_type: "", description: "", evidence_count: 0, required_evidence: 3, provenance: "internal", is_hard: true }],
+    shields: [],
+    stats: { total_scars: 1, hard_scars: 1, total_shields: 0, health: "CONSTRAINED" },
+  };
+
+  it("spawns with correct args", async () => {
+    const proc = createMockProcess(JSON.stringify(scarList), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getScarList(defaultOpts);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["scar", "list", "--json"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("parses scar list result", async () => {
+    const proc = createMockProcess(JSON.stringify(scarList), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await getScarList(defaultOpts);
+    expect(result.scars).toHaveLength(1);
+    expect(result.stats.health).toBe("CONSTRAINED");
+  });
+
+  it("rejects on error", async () => {
+    const proc = createMockProcess("", "Error", 1);
+    mockSpawn.mockReturnValue(proc);
+
+    await expect(getScarList(defaultOpts)).rejects.toThrow(/exited with code 1/);
+  });
+});
+
+// =========================================================================
+// V7.1: getScarHistory
+// =========================================================================
+
+describe("getScarHistory", () => {
+  beforeEach(() => { mockSpawn.mockReset(); });
+
+  const events: FailureEventView[] = [{
+    event_id: "ev1",
+    timestamp: "2025-01-01T00:00:00Z",
+    region: "api",
+    failure_kind: "timeout",
+    action_type: "write",
+    description: "test",
+    surprise_ratio: 0.1,
+    provenance: "internal",
+    response_type: "scar",
+    scar_id: "s1",
+    shield_id: null,
+  }];
+
+  it("spawns with correct args and default limit", async () => {
+    const proc = createMockProcess(JSON.stringify(events), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getScarHistory(defaultOpts);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["scar", "history", "--json", "--limit", "20"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("passes custom limit", async () => {
+    const proc = createMockProcess(JSON.stringify(events), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    await getScarHistory(defaultOpts, 5);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["scar", "history", "--json", "--limit", "5"],
+      expect.anything()
+    );
+  });
+
+  it("parses failure event array", async () => {
+    const proc = createMockProcess(JSON.stringify(events), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await getScarHistory(defaultOpts);
+    expect(result).toHaveLength(1);
+    expect(result[0].event_id).toBe("ev1");
+    expect(result[0].surprise_ratio).toBe(0.1);
   });
 });

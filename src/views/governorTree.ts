@@ -7,7 +7,11 @@
  */
 
 import * as vscode from "vscode";
-import { fetchState, getIntent, listOverrides, runCodeCompare, getReceipts, runSelfcheck, GovernorOptions } from "../governor/client";
+import {
+  fetchState, getIntent, listOverrides, runCodeCompare, getReceipts, runSelfcheck,
+  getScopeStatus, getScopeGrants, getScarList, getScarHistory,
+  GovernorOptions,
+} from "../governor/client";
 import type {
   GovernorViewModelV2,
   DecisionView,
@@ -21,6 +25,10 @@ import type {
   CodeDivergenceReportView,
   GateReceiptView,
   SelfcheckResult,
+  ScopeStatusView,
+  ScopeGrantView,
+  ScarListResult,
+  FailureEventView,
 } from "../governor/types";
 
 // =========================================================================
@@ -94,6 +102,10 @@ export class GovernorTreeProvider
   private compareReport: CodeDivergenceReportView | null = null;
   private receipts: GateReceiptView[] = [];
   private selfcheck: SelfcheckResult | null = null;
+  private scopeStatus: ScopeStatusView | null = null;
+  private scopeGrants: ScopeGrantView[] = [];
+  private scarResult: ScarListResult | null = null;
+  private scarHistory: FailureEventView[] = [];
   private error: string | null = null;
 
   constructor(
@@ -121,27 +133,45 @@ export class GovernorTreeProvider
 
   async refresh(): Promise<void> {
     try {
-      // Fetch all state in parallel
+      // Fetch all state in parallel — keyed pattern prevents index drift
       const opts = this.getOptions();
-      const [stateResult, intentResult, overridesResult, compareResult, receiptsResult, selfcheckResult] = await Promise.allSettled([
-        fetchState(opts),
-        getIntent(opts),
-        listOverrides(opts),
-        runCodeCompare(opts),
-        getReceipts(opts, { last: 20 }),
-        runSelfcheck(opts),
-      ]);
+      const fetchers: Record<string, Promise<unknown>> = {
+        state: fetchState(opts),
+        intent: getIntent(opts),
+        overrides: listOverrides(opts),
+        compare: runCodeCompare(opts),
+        receipts: getReceipts(opts, { last: 20 }),
+        selfcheck: runSelfcheck(opts),
+        scopeStatus: getScopeStatus(opts),
+        scopeGrants: getScopeGrants(opts),
+        scarList: getScarList(opts),
+        scarHistory: getScarHistory(opts),
+      };
 
-      this.state = stateResult.status === "fulfilled" ? stateResult.value : null;
-      this.intent = intentResult.status === "fulfilled" ? intentResult.value : null;
-      this.overrides = overridesResult.status === "fulfilled" ? overridesResult.value : [];
-      this.compareReport = compareResult.status === "fulfilled" ? compareResult.value : null;
-      this.receipts = receiptsResult.status === "fulfilled" ? receiptsResult.value : [];
-      this.selfcheck = selfcheckResult.status === "fulfilled" ? selfcheckResult.value : null;
+      const entries = Object.entries(fetchers);
+      const settled = await Promise.allSettled(entries.map(([, p]) => p));
+      const results: Record<string, unknown> = {};
+      for (let i = 0; i < entries.length; i++) {
+        const [key] = entries[i];
+        const s = settled[i];
+        results[key] = s.status === "fulfilled" ? s.value : null;
+      }
 
-      // Only set error if state fetch failed (intent/overrides are optional)
-      this.error = stateResult.status === "rejected"
-        ? (stateResult.reason instanceof Error ? stateResult.reason.message : String(stateResult.reason))
+      this.state = results.state as GovernorViewModelV2 | null;
+      this.intent = results.intent as IntentResult | null;
+      this.overrides = (results.overrides as OverrideView[] | null) ?? [];
+      this.compareReport = results.compare as CodeDivergenceReportView | null;
+      this.receipts = (results.receipts as GateReceiptView[] | null) ?? [];
+      this.selfcheck = results.selfcheck as SelfcheckResult | null;
+      this.scopeStatus = results.scopeStatus as ScopeStatusView | null;
+      this.scopeGrants = (results.scopeGrants as ScopeGrantView[] | null) ?? [];
+      this.scarResult = results.scarList as ScarListResult | null;
+      this.scarHistory = (results.scarHistory as FailureEventView[] | null) ?? [];
+
+      // Only set error if state fetch failed (everything else is optional)
+      const stateSettled = settled[entries.findIndex(([k]) => k === "state")];
+      this.error = stateSettled.status === "rejected"
+        ? (stateSettled.reason instanceof Error ? stateSettled.reason.message : String(stateSettled.reason))
         : null;
     } catch (err: unknown) {
       this.state = null;
@@ -150,6 +180,10 @@ export class GovernorTreeProvider
       this.compareReport = null;
       this.receipts = [];
       this.selfcheck = null;
+      this.scopeStatus = null;
+      this.scopeGrants = [];
+      this.scarResult = null;
+      this.scarHistory = [];
       this.error = err instanceof Error ? err.message : String(err);
     }
     this._onDidChangeTreeData.fire();
@@ -249,7 +283,14 @@ export class GovernorTreeProvider
     // Advanced section (collapsed)
     nodes.push(this.buildSessionNode(this.state));
     nodes.push(this.buildRegimeNode(this.state));
+
+    // V7.1: Scope (between Regime and Stability)
+    nodes.push(this.buildScopeNode());
+
     nodes.push(this.buildStabilityNode(this.state));
+
+    // V7.1: Scars (after Stability)
+    nodes.push(this.buildScarsNode());
 
     return nodes;
   }
@@ -793,4 +834,229 @@ export class GovernorTreeProvider
       detail: this.intent ? JSON.stringify(this.intent.intent, null, 2) : undefined,
     };
   }
+
+  // -----------------------------------------------------------------------
+  // V7.1: Scope section
+  // -----------------------------------------------------------------------
+
+  buildScopeNode(): TreeNodeData {
+    if (this.scopeStatus === null) {
+      return {
+        kind: "scope",
+        label: "Scope",
+        collapsible: false,
+        icon: "compass",
+        children: [{
+          kind: "scope-unavailable",
+          label: "Unavailable (upgrade governor)",
+          collapsible: false,
+          icon: "info",
+        }],
+      };
+    }
+
+    const s = this.scopeStatus;
+    const children: TreeNodeData[] = [];
+
+    // Axes summary
+    const axes = Object.entries(s.run_scope);
+    if (axes.length > 0) {
+      const axisLabel = axes.map(([k, v]) => `${k}=${v}`).join(", ");
+      children.push({
+        kind: "scope-axes",
+        label: `Axes: ${axisLabel}`,
+        collapsible: false,
+        icon: "list-flat",
+      });
+    } else {
+      children.push({
+        kind: "scope-axes",
+        label: "No axes configured",
+        description: "Run: governor scope set --axis key=value",
+        collapsible: false,
+        icon: "info",
+      });
+    }
+
+    // Contracts count
+    children.push({
+      kind: "scope-contracts",
+      label: `Contracts: ${s.contracts_count}`,
+      collapsible: false,
+      icon: "file-text",
+    });
+
+    // Grants (expandable)
+    if (this.scopeGrants.length > 0) {
+      const grantChildren: TreeNodeData[] = this.scopeGrants.map((g) => ({
+        kind: "scope-grant",
+        label: `${g.tool_id}`,
+        description: `${g.usage_count} uses${g.write ? " [W]" : ""}${g.execute ? " [X]" : ""}`,
+        collapsible: false,
+        icon: g.write || g.execute ? "key" : "unlock",
+        detail: JSON.stringify(g, null, 2),
+      }));
+
+      children.push({
+        kind: "scope-grants",
+        label: `Grants (${this.scopeGrants.length})`,
+        collapsible: true,
+        icon: "key",
+        children: grantChildren,
+      });
+    }
+
+    // Escalation stats
+    if (s.escalation_count > 0) {
+      children.push({
+        kind: "scope-escalations",
+        label: `Escalations: ${s.escalation_count}`,
+        collapsible: false,
+        icon: "arrow-up",
+      });
+    }
+
+    // Section label
+    const scopeLabel = axes.length > 0
+      ? `Scope: ${axes[0][1].toUpperCase()}${axes.length > 1 ? ` +${axes.length - 1}` : ""}`
+      : "Scope: not configured";
+
+    return {
+      kind: "scope",
+      label: scopeLabel,
+      collapsible: true,
+      icon: "compass",
+      children,
+      detail: JSON.stringify({ status: s, grants: this.scopeGrants }, null, 2),
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // V7.1: Scars section
+  // -----------------------------------------------------------------------
+
+  buildScarsNode(): TreeNodeData {
+    if (this.scarResult === null) {
+      return {
+        kind: "scars",
+        label: "Scars",
+        collapsible: false,
+        icon: "shield",
+        children: [{
+          kind: "scars-unavailable",
+          label: "Unavailable (upgrade governor)",
+          collapsible: false,
+          icon: "info",
+        }],
+      };
+    }
+
+    const { scars, shields, stats } = this.scarResult;
+    const children: TreeNodeData[] = [];
+
+    // Scars group
+    if (scars.length > 0) {
+      const scarChildren: TreeNodeData[] = scars.map((s) => ({
+        kind: "scar-item",
+        label: `${s.region}${s.is_hard ? " [HARD]" : ""}`,
+        description: stiffnessBar(s.stiffness),
+        collapsible: false,
+        icon: s.is_hard ? "warning" : "info",
+        tooltip: `Stiffness: ${s.stiffness.toFixed(3)} | Evidence: ${s.evidence_count}/${s.required_evidence} | ${s.provenance}`,
+        detail: JSON.stringify(s, null, 2),
+      }));
+
+      children.push({
+        kind: "scars-group",
+        label: `Scars (${scars.length})`,
+        collapsible: true,
+        icon: "warning",
+        children: scarChildren,
+      });
+    }
+
+    // Shields group
+    if (shields.length > 0) {
+      const shieldChildren: TreeNodeData[] = shields.map((s) => ({
+        kind: "shield-item",
+        label: `${s.source}`,
+        description: s.is_fully_blocked ? "BLOCKED" : `${Math.round(s.permeability * 100)}% open`,
+        collapsible: false,
+        icon: s.is_fully_blocked ? "error" : "info",
+        tooltip: `Stable cycles: ${s.stable_cycles_observed}/${s.stable_cycles_required}`,
+        detail: JSON.stringify(s, null, 2),
+      }));
+
+      children.push({
+        kind: "shields-group",
+        label: `Shields (${shields.length})`,
+        collapsible: true,
+        icon: "shield",
+        children: shieldChildren,
+      });
+    }
+
+    // History group (collapsed, max 10)
+    if (this.scarHistory.length > 0) {
+      const historyChildren: TreeNodeData[] = this.scarHistory.slice(0, 10).map((e) => ({
+        kind: "scar-history-item",
+        label: `${e.region} (${e.provenance})`,
+        description: `rho=${e.surprise_ratio.toFixed(2)} ${e.response_type}`,
+        collapsible: false,
+        icon: "history",
+        detail: JSON.stringify(e, null, 2),
+      }));
+
+      children.push({
+        kind: "scars-history",
+        label: `History (${Math.min(this.scarHistory.length, 10)})`,
+        collapsible: true,
+        icon: "history",
+        children: historyChildren,
+      });
+    }
+
+    // Empty state
+    if (scars.length === 0 && shields.length === 0) {
+      children.push({
+        kind: "scars-empty",
+        label: "No scars or shields",
+        collapsible: false,
+        icon: "check",
+      });
+    }
+
+    // Health-colored icon
+    const healthIcon = stats.health === "CONSTRAINED" ? "warning"
+      : stats.health === "CAUTIOUS" ? "info"
+      : "check";
+
+    const parts: string[] = [];
+    if (stats.total_scars > 0) { parts.push(`${stats.total_scars} scar${stats.total_scars !== 1 ? "s" : ""}`); }
+    if (stats.total_shields > 0) { parts.push(`${stats.total_shields} shield${stats.total_shields !== 1 ? "s" : ""}`); }
+    const summary = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+
+    return {
+      kind: "scars",
+      label: `Scars: ${stats.health}${summary}`,
+      collapsible: true,
+      icon: healthIcon,
+      children,
+      detail: JSON.stringify(this.scarResult, null, 2),
+    };
+  }
+}
+
+// =========================================================================
+// Helpers
+// =========================================================================
+
+/**
+ * 5-char stiffness bar using Unicode block characters.
+ * Clamp hard: null/undefined/NaN/out-of-range → safe.
+ */
+export function stiffnessBar(n: number): string {
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(n) ? n : 0));
+  const filled = Math.round(clamped * 5);
+  return "\u2588".repeat(filled) + "\u2591".repeat(5 - filled);
 }

@@ -372,6 +372,89 @@ export interface CorrelatorStatus {
 }
 
 // =========================================================================
+// V7.1: Scope types (`governor scope status --json`, `governor scope grants --json`)
+// =========================================================================
+
+export interface ScopeAxisView {
+  name: string;
+  value: string;
+}
+
+export interface ScopeStatusView {
+  run_scope: Record<string, string>;
+  contracts_count: number;
+  grants_count: number;
+  escalation_count: number;
+  scope_level: number;
+}
+
+export interface ScopeGrantView {
+  grant_id: string;
+  tool_id: string;
+  axes: Record<string, string>;
+  granted_at: string;
+  expires_at: string | null;
+  usage_count: number;
+  write: boolean;
+  execute: boolean;
+}
+
+// =========================================================================
+// V7.1: Scar types (`governor scar list --json`, `governor scar history --json`)
+// =========================================================================
+
+export interface ScarView {
+  scar_id: string;
+  region: string;
+  stiffness: number;
+  failure_kind: string;
+  action_type: string;
+  description: string;
+  evidence_count: number;
+  required_evidence: number;
+  provenance: string;
+  is_hard: boolean;
+}
+
+export interface ShieldView {
+  shield_id: string;
+  source: string;
+  permeability: number;
+  severity: number;
+  stable_cycles_observed: number;
+  stable_cycles_required: number;
+  is_blocking: boolean;
+  is_fully_blocked: boolean;
+}
+
+export interface ScarStatsView {
+  total_scars: number;
+  hard_scars: number;
+  total_shields: number;
+  health: "NOMINAL" | "CAUTIOUS" | "CONSTRAINED";
+}
+
+export interface ScarListResult {
+  scars: ScarView[];
+  shields: ShieldView[];
+  stats: ScarStatsView;
+}
+
+export interface FailureEventView {
+  event_id: string;
+  timestamp: string;
+  region: string;
+  failure_kind: string;
+  action_type: string;
+  description: string;
+  surprise_ratio: number;
+  provenance: string;
+  response_type: string;
+  scar_id: string | null;
+  shield_id: string | null;
+}
+
+// =========================================================================
 // Governor ViewModel V2 (canonical state)
 // =========================================================================
 

@@ -4,8 +4,8 @@
  */
 
 import * as vscode from "vscode";
-import { GovernorTreeProvider, TreeNodeData } from "../../views/governorTree";
-import type { GovernorViewModelV2 } from "../../governor/types";
+import { GovernorTreeProvider, TreeNodeData, stiffnessBar } from "../../views/governorTree";
+import type { GovernorViewModelV2, ScopeStatusView, ScarListResult, FailureEventView } from "../../governor/types";
 
 // Mock client functions
 const mockFetchState = jest.fn();
@@ -14,6 +14,10 @@ const mockListOverrides = jest.fn();
 const mockRunCodeCompare = jest.fn();
 const mockGetReceipts = jest.fn();
 const mockRunSelfcheck = jest.fn();
+const mockGetScopeStatus = jest.fn();
+const mockGetScopeGrants = jest.fn();
+const mockGetScarList = jest.fn();
+const mockGetScarHistory = jest.fn();
 jest.mock("../../governor/client", () => ({
   fetchState: (...args: unknown[]) => mockFetchState(...args),
   getIntent: (...args: unknown[]) => mockGetIntent(...args),
@@ -21,6 +25,10 @@ jest.mock("../../governor/client", () => ({
   runCodeCompare: (...args: unknown[]) => mockRunCodeCompare(...args),
   getReceipts: (...args: unknown[]) => mockGetReceipts(...args),
   runSelfcheck: (...args: unknown[]) => mockRunSelfcheck(...args),
+  getScopeStatus: (...args: unknown[]) => mockGetScopeStatus(...args),
+  getScopeGrants: (...args: unknown[]) => mockGetScopeGrants(...args),
+  getScarList: (...args: unknown[]) => mockGetScarList(...args),
+  getScarHistory: (...args: unknown[]) => mockGetScarHistory(...args),
   GovernorOptions: {},
 }));
 
@@ -180,12 +188,20 @@ describe("GovernorTreeProvider", () => {
     mockRunCodeCompare.mockReset();
     mockGetReceipts.mockReset();
     mockRunSelfcheck.mockReset();
+    mockGetScopeStatus.mockReset();
+    mockGetScopeGrants.mockReset();
+    mockGetScarList.mockReset();
+    mockGetScarHistory.mockReset();
     // Default mocks for intent/overrides/compare/receipts/selfcheck (always succeed with defaults)
     mockGetIntent.mockResolvedValue(defaultIntent());
     mockListOverrides.mockResolvedValue([]);
     mockRunCodeCompare.mockRejectedValue(new Error("no compare data"));
     mockGetReceipts.mockResolvedValue([]);
     mockRunSelfcheck.mockRejectedValue(new Error("selfcheck not available"));
+    mockGetScopeStatus.mockRejectedValue(new Error("scope not available"));
+    mockGetScopeGrants.mockRejectedValue(new Error("scope not available"));
+    mockGetScarList.mockRejectedValue(new Error("scar not available"));
+    mockGetScarHistory.mockRejectedValue(new Error("scar not available"));
     provider = new GovernorTreeProvider(createOutputChannel(), () => defaultOpts);
   });
 
@@ -248,10 +264,10 @@ describe("GovernorTreeProvider", () => {
       await provider.refresh();
     });
 
-    it("shows all 10 root nodes", () => {
+    it("shows all 12 root nodes", () => {
       const roots = provider.getChildren();
-      // problems, intent, decisions, claims, evidence, execution, receipts, session, regime, stability
-      expect(roots).toHaveLength(10);
+      // problems, intent, decisions, claims, evidence, execution, receipts, session, regime, scope, stability, scars
+      expect(roots).toHaveLength(12);
     });
 
     it("session node has mode and authority children", () => {
@@ -755,6 +771,279 @@ describe("GovernorTreeProvider", () => {
       await provider.refresh();
 
       expect(provider.getSelfcheck()).toBeNull();
+    });
+  });
+
+  // =========================================================================
+  // V7.1: Scope section
+  // =========================================================================
+
+  describe("scope section", () => {
+    it("shows unavailable leaf when CLI fails", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScopeStatus.mockRejectedValue(new Error("not available"));
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scope = roots.find((r) => r.kind === "scope")!;
+      expect(scope).toBeDefined();
+      expect(scope.children).toHaveLength(1);
+      expect(scope.children![0].kind).toBe("scope-unavailable");
+      expect(scope.children![0].label).toContain("Unavailable");
+    });
+
+    it("shows not configured when no axes", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScopeStatus.mockResolvedValue({
+        run_scope: {},
+        contracts_count: 0,
+        grants_count: 0,
+        escalation_count: 0,
+        scope_level: 0,
+      } as ScopeStatusView);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scope = roots.find((r) => r.kind === "scope")!;
+      expect(scope.label).toBe("Scope: not configured");
+      const axesChild = scope.children!.find((c) => c.kind === "scope-axes");
+      expect(axesChild).toBeDefined();
+      expect(axesChild!.label).toBe("No axes configured");
+    });
+
+    it("shows configured axes in label", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScopeStatus.mockResolvedValue({
+        run_scope: { region: "us-east-1", service: "api" },
+        contracts_count: 3,
+        grants_count: 1,
+        escalation_count: 2,
+        scope_level: 2,
+      } as ScopeStatusView);
+      mockGetScopeGrants.mockResolvedValue([{
+        grant_id: "g1",
+        tool_id: "file_write",
+        axes: { region: "us-east-1" },
+        granted_at: "2025-01-01T00:00:00Z",
+        expires_at: null,
+        usage_count: 5,
+        write: true,
+        execute: false,
+      }]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scope = roots.find((r) => r.kind === "scope")!;
+      expect(scope.label).toBe("Scope: US-EAST-1 +1");
+
+      // Grants expandable with children
+      const grants = scope.children!.find((c) => c.kind === "scope-grants");
+      expect(grants).toBeDefined();
+      expect(grants!.children).toHaveLength(1);
+      expect(grants!.children![0].label).toBe("file_write");
+
+      // Escalation stats
+      const escalations = scope.children!.find((c) => c.kind === "scope-escalations");
+      expect(escalations).toBeDefined();
+      expect(escalations!.label).toBe("Escalations: 2");
+    });
+
+    it("scope between regime and stability in ordering", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const kinds = roots.map((r) => r.kind);
+      const regimeIdx = kinds.indexOf("regime-section");
+      const scopeIdx = kinds.indexOf("scope");
+      const stabilityIdx = kinds.indexOf("stability");
+      expect(scopeIdx).toBeGreaterThan(regimeIdx);
+      expect(scopeIdx).toBeLessThan(stabilityIdx);
+    });
+  });
+
+  // =========================================================================
+  // V7.1: Scars section
+  // =========================================================================
+
+  describe("scars section", () => {
+    it("shows unavailable leaf when CLI fails", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScarList.mockRejectedValue(new Error("not available"));
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scars = roots.find((r) => r.kind === "scars")!;
+      expect(scars).toBeDefined();
+      expect(scars.children).toHaveLength(1);
+      expect(scars.children![0].kind).toBe("scars-unavailable");
+      expect(scars.children![0].label).toContain("Unavailable");
+    });
+
+    it("shows nominal with no scars or shields", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScarList.mockResolvedValue({
+        scars: [],
+        shields: [],
+        stats: { total_scars: 0, hard_scars: 0, total_shields: 0, health: "NOMINAL" },
+      } as ScarListResult);
+      mockGetScarHistory.mockResolvedValue([]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scars = roots.find((r) => r.kind === "scars")!;
+      expect(scars.label).toBe("Scars: NOMINAL");
+      expect(scars.icon).toBe("check");
+      const emptyChild = scars.children!.find((c) => c.kind === "scars-empty");
+      expect(emptyChild).toBeDefined();
+    });
+
+    it("shows constrained with hard scars", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScarList.mockResolvedValue({
+        scars: [{
+          scar_id: "s1",
+          region: "src/api",
+          stiffness: 1.0,
+          failure_kind: "timeout",
+          action_type: "write",
+          description: "test",
+          evidence_count: 0,
+          required_evidence: 3,
+          provenance: "internal",
+          is_hard: true,
+        }],
+        shields: [],
+        stats: { total_scars: 1, hard_scars: 1, total_shields: 0, health: "CONSTRAINED" },
+      } as ScarListResult);
+      mockGetScarHistory.mockResolvedValue([]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scars = roots.find((r) => r.kind === "scars")!;
+      expect(scars.label).toContain("CONSTRAINED");
+      expect(scars.label).toContain("1 scar");
+      expect(scars.icon).toBe("warning");
+
+      const scarGroup = scars.children!.find((c) => c.kind === "scars-group");
+      expect(scarGroup).toBeDefined();
+      expect(scarGroup!.children![0].label).toContain("src/api");
+      expect(scarGroup!.children![0].label).toContain("[HARD]");
+    });
+
+    it("shows shields blocking", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScarList.mockResolvedValue({
+        scars: [],
+        shields: [{
+          shield_id: "sh1",
+          source: "untrusted-api",
+          permeability: 0.0,
+          severity: 0.9,
+          stable_cycles_observed: 0,
+          stable_cycles_required: 5,
+          is_blocking: true,
+          is_fully_blocked: true,
+        }],
+        stats: { total_scars: 0, hard_scars: 0, total_shields: 1, health: "CAUTIOUS" },
+      } as ScarListResult);
+      mockGetScarHistory.mockResolvedValue([]);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scars = roots.find((r) => r.kind === "scars")!;
+      const shieldGroup = scars.children!.find((c) => c.kind === "shields-group");
+      expect(shieldGroup).toBeDefined();
+      expect(shieldGroup!.children![0].description).toBe("BLOCKED");
+    });
+
+    it("history capped at 10", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      mockGetScarList.mockResolvedValue({
+        scars: [],
+        shields: [],
+        stats: { total_scars: 0, hard_scars: 0, total_shields: 0, health: "NOMINAL" },
+      } as ScarListResult);
+
+      const events: FailureEventView[] = Array.from({ length: 15 }, (_, i) => ({
+        event_id: `ev${i}`,
+        timestamp: "2025-01-01T00:00:00Z",
+        region: `region${i}`,
+        failure_kind: "timeout",
+        action_type: "write",
+        description: "",
+        surprise_ratio: 0.5,
+        provenance: "internal",
+        response_type: "scar",
+        scar_id: null,
+        shield_id: null,
+      }));
+      mockGetScarHistory.mockResolvedValue(events);
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const scars = roots.find((r) => r.kind === "scars")!;
+      const history = scars.children!.find((c) => c.kind === "scars-history");
+      expect(history).toBeDefined();
+      expect(history!.children).toHaveLength(10);
+      expect(history!.label).toBe("History (10)");
+    });
+
+    it("scars after stability in ordering", async () => {
+      mockFetchState.mockResolvedValue(emptyState());
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      const kinds = roots.map((r) => r.kind);
+      const stabilityIdx = kinds.indexOf("stability");
+      const scarsIdx = kinds.indexOf("scars");
+      expect(scarsIdx).toBeGreaterThan(stabilityIdx);
+    });
+
+    it("total section count is correct with full state", async () => {
+      mockFetchState.mockResolvedValue(fullState());
+      await provider.refresh();
+
+      const roots = provider.getChildren();
+      // 12: problems, intent, decisions, claims, evidence, execution, receipts, session, regime, scope, stability, scars
+      expect(roots).toHaveLength(12);
+    });
+  });
+
+  // =========================================================================
+  // V7.1: stiffnessBar helper
+  // =========================================================================
+
+  describe("stiffnessBar", () => {
+    it("returns 5 empty blocks for 0", () => {
+      expect(stiffnessBar(0)).toBe("\u2591\u2591\u2591\u2591\u2591");
+    });
+
+    it("returns 5 full blocks for 1", () => {
+      expect(stiffnessBar(1)).toBe("\u2588\u2588\u2588\u2588\u2588");
+    });
+
+    it("returns mixed blocks for 0.6", () => {
+      const bar = stiffnessBar(0.6);
+      expect(bar).toHaveLength(5);
+      expect(bar).toBe("\u2588\u2588\u2588\u2591\u2591");
+    });
+
+    it("clamps negative to 0", () => {
+      expect(stiffnessBar(-1)).toBe("\u2591\u2591\u2591\u2591\u2591");
+    });
+
+    it("clamps > 1 to full", () => {
+      expect(stiffnessBar(2)).toBe("\u2588\u2588\u2588\u2588\u2588");
+    });
+
+    it("handles NaN safely", () => {
+      expect(stiffnessBar(NaN)).toBe("\u2591\u2591\u2591\u2591\u2591");
+    });
+
+    it("handles undefined/null safely", () => {
+      expect(stiffnessBar(undefined as unknown as number)).toBe("\u2591\u2591\u2591\u2591\u2591");
+      expect(stiffnessBar(null as unknown as number)).toBe("\u2591\u2591\u2591\u2591\u2591");
     });
   });
 });

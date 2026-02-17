@@ -8,6 +8,7 @@
 import * as vscode from "vscode";
 import { GovernorClient, SetIntentOptions } from "./governor/client";
 import type { CheckResult, GovernorViewModelV2, IntentResult, SelfcheckResult, CorrelatorStatus } from "./governor/types";
+import { CaptureAlertProvider, setCaptureAlert, clearCaptureAlert } from "./capture-alert";
 import { DiagnosticProvider } from "./diagnostics/provider";
 import { GovernorTreeProvider } from "./views/governorTree";
 import { GovernorHoverProvider } from "./hovers/provider";
@@ -27,6 +28,9 @@ let client: GovernorClient;
 let correlatorTimer: ReturnType<typeof setInterval> | null = null;
 let lastCorrelatorStatus: CorrelatorStatus | null = null;
 let capturedConsecutive = 0;
+let okConsecutive = 0;
+let captureAlertProvider: CaptureAlertProvider;
+let correlatorDiagnostics: vscode.DiagnosticCollection;
 
 function getClientConfig() {
   const config = vscode.workspace.getConfiguration("governor");
@@ -102,9 +106,14 @@ async function runSelfcheckRefresh(): Promise<void> {
 // V7.0: Correlator status bar
 // =========================================================================
 
-function updateCorrelatorStatusBar(status: CorrelatorStatus | null): void {
+function updateCorrelatorStatusBar(status: CorrelatorStatus | null, isError = false): void {
   if (!status) {
     correlatorStatusBar.hide();
+    // Errors don't count as "OK" toward clearThreshold
+    if (!isError) {
+      okConsecutive++;
+      capturedConsecutive = 0;
+    }
     return;
   }
 
@@ -113,12 +122,18 @@ function updateCorrelatorStatusBar(status: CorrelatorStatus | null): void {
 
   if (status.is_captured) {
     capturedConsecutive++;
+    okConsecutive = 0;
   } else {
     capturedConsecutive = 0;
+    okConsecutive++;
   }
 
-  // Hysteresis: require 3 consecutive CAPTURED polls before alarming
-  const showCapture = capturedConsecutive >= 3;
+  // Read thresholds dynamically (no restart needed)
+  const config = vscode.workspace.getConfiguration("governor");
+  const captureThreshold = Math.max(1, Math.min(10, config.get<number>("correlator.captureThreshold", 3)));
+  const clearThreshold = Math.max(1, Math.min(10, config.get<number>("correlator.clearThreshold", 3)));
+
+  const showCapture = capturedConsecutive >= captureThreshold;
 
   if (showCapture) {
     correlatorStatusBar.text = `$(alert) CAPTURED K:[${compact}]`;
@@ -127,10 +142,19 @@ function updateCorrelatorStatusBar(status: CorrelatorStatus | null): void {
       .filter((i) => i.active)
       .map((i) => `${i.name}: ${i.consecutive_windows}/${i.threshold} windows`)
       .join("\n")}\n\nK-vector: ${compact}`;
+
+    // V7.1: Set capture alert in Problems panel
+    captureAlertProvider.updateStatus(status);
+    setCaptureAlert(correlatorDiagnostics, status);
   } else {
     correlatorStatusBar.text = `$(pulse) K:[${compact}]`;
     correlatorStatusBar.backgroundColor = undefined;
     correlatorStatusBar.tooltip = `Correlator: ${status.regime}\n\nK-vector:\n  Throughput: ${k.throughput}\n  Fidelity: ${k.fidelity}\n  Authority: ${k.authority}\n  Cost: ${k.cost}`;
+
+    // V7.1: Clear capture alert after enough consecutive OK polls
+    if (okConsecutive >= clearThreshold) {
+      clearCaptureAlert(correlatorDiagnostics);
+    }
   }
   correlatorStatusBar.show();
 
@@ -142,8 +166,8 @@ async function pollCorrelator(): Promise<void> {
     const status = await client.getCorrelatorStatus();
     updateCorrelatorStatusBar(status);
   } catch {
-    // Silently hide on failure — correlator may not be available
-    updateCorrelatorStatusBar(null);
+    // Silently hide on failure — errors don't count as "OK"
+    updateCorrelatorStatusBar(null, /* isError */ true);
   }
 }
 
@@ -315,6 +339,10 @@ export function activate(context: vscode.ExtensionContext): void {
   correlatorStatusBar.text = "$(pulse) K: ?";
   correlatorStatusBar.tooltip = "Governor Correlator";
 
+  // V7.1: Capture alert — virtual doc provider + diagnostics
+  captureAlertProvider = new CaptureAlertProvider();
+  correlatorDiagnostics = vscode.languages.createDiagnosticCollection("governor-correlator");
+
   // Tree view
   const getOptions = () => getClientConfig();
   const treeProvider = new GovernorTreeProvider(outputChannel, getOptions);
@@ -356,6 +384,9 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBarItem,
     selfcheckStatusBar,
     correlatorStatusBar,
+    correlatorDiagnostics,
+    captureAlertProvider,
+    vscode.workspace.registerTextDocumentContentProvider("agent-governor", captureAlertProvider),
     treeView,
     treeProvider,
     hoverProvider,
@@ -546,6 +577,58 @@ export function activate(context: vscode.ExtensionContext): void {
         outputChannel.show();
       }
     }),
+    // V7.1: Show scope status
+    vscode.commands.registerCommand("governor.showScope", async () => {
+      try {
+        const status = await client.getScopeStatus();
+        const grants = await client.getScopeGrants();
+        outputChannel.appendLine("\n=== Scope Status ===");
+        outputChannel.appendLine(`Level: ${status.scope_level}`);
+        outputChannel.appendLine(`Axes: ${JSON.stringify(status.run_scope)}`);
+        outputChannel.appendLine(`Contracts: ${status.contracts_count}`);
+        outputChannel.appendLine(`Grants: ${grants.length}`);
+        outputChannel.appendLine(`Escalations: ${status.escalation_count}`);
+        if (grants.length > 0) {
+          outputChannel.appendLine("\nGrants:");
+          for (const g of grants) {
+            outputChannel.appendLine(`  ${g.tool_id}: ${g.usage_count} uses${g.write ? " [W]" : ""}${g.execute ? " [X]" : ""}`);
+          }
+        }
+        outputChannel.show();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`Scope error: ${msg}`);
+        outputChannel.show();
+      }
+    }),
+    // V7.1: Show scar status
+    vscode.commands.registerCommand("governor.showScars", async () => {
+      try {
+        const result = await client.getScarList();
+        outputChannel.appendLine("\n=== Scar Status ===");
+        outputChannel.appendLine(`Health: ${result.stats.health}`);
+        outputChannel.appendLine(`Scars: ${result.stats.total_scars} (${result.stats.hard_scars} hard)`);
+        outputChannel.appendLine(`Shields: ${result.stats.total_shields}`);
+        if (result.scars.length > 0) {
+          outputChannel.appendLine("\nScars:");
+          for (const s of result.scars) {
+            outputChannel.appendLine(`  ${s.region}: stiffness=${s.stiffness.toFixed(3)} ${s.is_hard ? "[HARD]" : "[soft]"}`);
+          }
+        }
+        if (result.shields.length > 0) {
+          outputChannel.appendLine("\nShields:");
+          for (const s of result.shields) {
+            const status = s.is_fully_blocked ? "BLOCKED" : `${Math.round(s.permeability * 100)}% open`;
+            outputChannel.appendLine(`  ${s.source}: ${status}`);
+          }
+        }
+        outputChannel.show();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`Scar error: ${msg}`);
+        outputChannel.show();
+      }
+    }),
     // V7.0: Run preflight manually
     vscode.commands.registerCommand("governor.runPreflight", async () => {
       const config = vscode.workspace.getConfiguration("governor");
@@ -635,7 +718,7 @@ export function activate(context: vscode.ExtensionContext): void {
   runPreflightOnOpen();
   startCorrelatorPolling();
 
-  outputChannel.appendLine("Agent Governor extension activated (V7.0 — Preflight + Correlator).");
+  outputChannel.appendLine("Agent Governor extension activated (V7.1 — Scope + Scars + Capture Alerts).");
 }
 
 export function deactivate(): void {

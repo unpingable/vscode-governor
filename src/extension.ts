@@ -611,6 +611,15 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  // Workspace Trust: start background activity when trust is granted mid-session
+  context.subscriptions.push(
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      outputChannel.appendLine("Workspace trusted — starting background activity.");
+      runPreflightOnOpen();
+      startCorrelatorPolling();
+    }),
+  );
+
   // Cleanup on deactivate
   context.subscriptions.push({ dispose: () => {
     stopCorrelatorPolling();

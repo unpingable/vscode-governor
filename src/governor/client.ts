@@ -51,10 +51,11 @@ export interface CapabilitySet {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const LONG_TIMEOUT_MS = 60_000;
 
-// Force deterministic output from CLI
+// Force deterministic output from CLI.
+// LC_ALL=C only on non-Windows (Windows locale handling is different).
 const CLI_ENV: Record<string, string> = {
-  LC_ALL: "C",
   NO_COLOR: "1",
+  ...(process.platform !== "win32" ? { LC_ALL: "C" } : {}),
 };
 
 /**
@@ -70,6 +71,8 @@ export class GovernorClient {
   private config: GovernorClientConfig;
   private capabilities: CapabilitySet | null = null;
   private capabilityProbe: Promise<CapabilitySet> | null = null;
+  /** The binary path that was used when capabilities were probed. */
+  private capabilitiesProbedFor: string | null = null;
   private inflight = new Map<string, ChildProcess>();
 
   constructor(config: GovernorClientConfig) {
@@ -77,10 +80,14 @@ export class GovernorClient {
   }
 
   updateConfig(config: Partial<GovernorClientConfig>): void {
+    const oldPath = this.config.executablePath;
     this.config = { ...this.config, ...config };
-    // Reset capabilities when config changes (different binary may have different features)
-    this.capabilities = null;
-    this.capabilityProbe = null;
+    // Reset capabilities when binary path changes (different binary = different features)
+    if (config.executablePath && config.executablePath !== oldPath) {
+      this.capabilities = null;
+      this.capabilityProbe = null;
+      this.capabilitiesProbedFor = null;
+    }
   }
 
   // =========================================================================
@@ -178,6 +185,12 @@ export class GovernorClient {
    * Each probe tries a lightweight command (--help or status).
    */
   async getCapabilities(): Promise<CapabilitySet> {
+    // Invalidate if binary path changed since last probe
+    if (this.capabilities && this.capabilitiesProbedFor !== this.config.executablePath) {
+      this.capabilities = null;
+      this.capabilityProbe = null;
+    }
+
     if (this.capabilities) {
       return this.capabilities;
     }
@@ -188,6 +201,7 @@ export class GovernorClient {
     }
 
     this.capabilities = await this.capabilityProbe;
+    this.capabilitiesProbedFor = this.config.executablePath;
     this.capabilityProbe = null;
     return this.capabilities;
   }

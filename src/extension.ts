@@ -9,6 +9,7 @@ import * as vscode from "vscode";
 import { GovernorClient, SetIntentOptions } from "./governor/client";
 import type { CheckResult, GovernorViewModelV2, IntentResult, SelfcheckResult, CorrelatorStatus } from "./governor/types";
 import { CaptureAlertProvider, setCaptureAlert, clearCaptureAlert } from "./capture-alert";
+import { DoctorContentProvider, setDoctorDiagnostics, clearDoctorDiagnostics } from "./doctor-diagnostics";
 import { DiagnosticProvider } from "./diagnostics/provider";
 import { GovernorTreeProvider } from "./views/governorTree";
 import { GovernorHoverProvider } from "./hovers/provider";
@@ -31,6 +32,12 @@ let capturedConsecutive = 0;
 let okConsecutive = 0;
 let captureAlertProvider: CaptureAlertProvider;
 let correlatorDiagnostics: vscode.DiagnosticCollection;
+let doctorContentProvider: DoctorContentProvider;
+let doctorDiagnostics: vscode.DiagnosticCollection;
+let doctorTimer: ReturnType<typeof setInterval> | null = null;
+let doctorInFlight = false;
+let lastDoctorJson = "";
+let doctorUnavailableLogged = false;
 
 function getClientConfig() {
   const config = vscode.workspace.getConfiguration("governor");
@@ -193,6 +200,67 @@ function stopCorrelatorPolling(): void {
 }
 
 // =========================================================================
+// V7.1: Doctor polling
+// =========================================================================
+
+async function pollDoctor(): Promise<void> {
+  if (doctorInFlight) { return; } // Overlap guard: skip if previous poll still running
+  doctorInFlight = true;
+  try {
+    const caps = await client.getCapabilities();
+    if (!caps.doctor) {
+      if (!doctorUnavailableLogged) {
+        outputChannel.appendLine("Doctor diagnostics not available (governor CLI too old or doctor subcommand missing). Need governor >= 2.2.0.");
+        doctorUnavailableLogged = true;
+      }
+      clearDoctorDiagnostics(doctorDiagnostics);
+      doctorContentProvider.update(null);
+      lastDoctorJson = "";
+      return;
+    }
+    const result = await client.runDoctor();
+    // Fingerprint only checks+counts (ignores future timestamp fields)
+    const json = JSON.stringify({ checks: result.checks, counts: result.counts });
+    if (json !== lastDoctorJson) {
+      lastDoctorJson = json;
+      doctorContentProvider.update(result);
+      setDoctorDiagnostics(doctorDiagnostics, result);
+    }
+  } catch {
+    // Doctor unavailable is not an error — silently clear
+    if (lastDoctorJson !== "") {
+      clearDoctorDiagnostics(doctorDiagnostics);
+      doctorContentProvider.update(null);
+      lastDoctorJson = "";
+    }
+  } finally {
+    doctorInFlight = false;
+  }
+}
+
+function startDoctorPolling(): void {
+  const config = vscode.workspace.getConfiguration("governor");
+  if (!config.get<boolean>("backgroundActivity.enabled", true)) { return; }
+  if (!config.get<boolean>("doctor.enabled", true)) { return; }
+  if (!vscode.workspace.isTrusted) { return; }
+
+  const interval = config.get<number>("doctor.pollIntervalMs", 60_000);
+  stopDoctorPolling();
+
+  // Initial poll
+  pollDoctor();
+
+  doctorTimer = setInterval(() => { pollDoctor(); }, interval);
+}
+
+function stopDoctorPolling(): void {
+  if (doctorTimer) {
+    clearInterval(doctorTimer);
+    doctorTimer = null;
+  }
+}
+
+// =========================================================================
 // V7.0: Preflight on workspace open
 // =========================================================================
 
@@ -343,6 +411,10 @@ export function activate(context: vscode.ExtensionContext): void {
   captureAlertProvider = new CaptureAlertProvider();
   correlatorDiagnostics = vscode.languages.createDiagnosticCollection("governor-correlator");
 
+  // V7.1: Doctor — virtual doc provider + diagnostics
+  doctorContentProvider = new DoctorContentProvider();
+  doctorDiagnostics = vscode.languages.createDiagnosticCollection("governor-doctor");
+
   // Tree view
   const getOptions = () => getClientConfig();
   const treeProvider = new GovernorTreeProvider(outputChannel, getOptions);
@@ -387,6 +459,9 @@ export function activate(context: vscode.ExtensionContext): void {
     correlatorDiagnostics,
     captureAlertProvider,
     vscode.workspace.registerTextDocumentContentProvider("agent-governor", captureAlertProvider),
+    doctorDiagnostics,
+    doctorContentProvider,
+    vscode.workspace.registerTextDocumentContentProvider("governor-doctor", doctorContentProvider),
     treeView,
     treeProvider,
     hoverProvider,
@@ -400,6 +475,7 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
       hoverProvider?.invalidateCache();
       pollCorrelator();
+      pollDoctor();
     }),
     vscode.commands.registerCommand("governor.showDetail", (detail: string) => {
       outputChannel.appendLine(detail);
@@ -629,6 +705,32 @@ export function activate(context: vscode.ExtensionContext): void {
         outputChannel.show();
       }
     }),
+    // V7.1: Run doctor on demand
+    vscode.commands.registerCommand("governor.runDoctor", async () => {
+      try {
+        const result = await client.runDoctor();
+        doctorContentProvider.update(result);
+        setDoctorDiagnostics(doctorDiagnostics, result);
+        lastDoctorJson = JSON.stringify(result);
+
+        outputChannel.appendLine("\n=== Governor Doctor ===");
+        for (const check of result.checks) {
+          const tag = check.status.toUpperCase();
+          outputChannel.appendLine(`[${tag}] ${check.name}: ${check.summary}`);
+          for (const cmd of check.next_commands) {
+            outputChannel.appendLine(`       → ${cmd}`);
+          }
+        }
+        outputChannel.appendLine(
+          `Counts: ${result.counts.ok} ok, ${result.counts.info} info, ${result.counts.warn} warn, ${result.counts.error} error`,
+        );
+        outputChannel.show();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`Doctor error: ${msg}`);
+        vscode.window.showErrorMessage(`Governor doctor failed: ${msg}`);
+      }
+    }),
     // V7.0: Run preflight manually
     vscode.commands.registerCommand("governor.runPreflight", async () => {
       const config = vscode.workspace.getConfiguration("governor");
@@ -691,6 +793,10 @@ export function activate(context: vscode.ExtensionContext): void {
         stopCorrelatorPolling();
         startCorrelatorPolling();
       }
+      if (e.affectsConfiguration("governor.doctor") || e.affectsConfiguration("governor.backgroundActivity")) {
+        stopDoctorPolling();
+        startDoctorPolling();
+      }
     }),
   );
 
@@ -700,12 +806,14 @@ export function activate(context: vscode.ExtensionContext): void {
       outputChannel.appendLine("Workspace trusted — starting background activity.");
       runPreflightOnOpen();
       startCorrelatorPolling();
+      startDoctorPolling();
     }),
   );
 
   // Cleanup on deactivate
   context.subscriptions.push({ dispose: () => {
     stopCorrelatorPolling();
+    stopDoctorPolling();
     client.dispose();
   }});
 
@@ -714,11 +822,12 @@ export function activate(context: vscode.ExtensionContext): void {
   refreshIntent();
   runSelfcheckRefresh();
 
-  // V7.0: Preflight on open + correlator polling
+  // V7.0: Preflight on open + correlator polling + doctor polling
   runPreflightOnOpen();
   startCorrelatorPolling();
+  startDoctorPolling();
 
-  outputChannel.appendLine("Agent Governor extension activated (V7.1 — Scope + Scars + Capture Alerts).");
+  outputChannel.appendLine("Agent Governor extension activated (2.2.0).");
 }
 
 export function deactivate(): void {

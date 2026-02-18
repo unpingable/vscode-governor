@@ -7,10 +7,34 @@ This extension does **not** re-implement governance logic. It shells out to the 
 
 ---
 
+## Compatibility
+
+| Feature | Minimum Governor CLI |
+|---------|---------------------|
+| Core (diagnostics, state, intent, receipts) | >= 2.0.0 |
+| Preflight on open | >= 2.1.0 |
+| Correlator / capture alerts | >= 2.1.0 |
+| Scope view, scar history | >= 2.1.0 |
+| Doctor diagnostics (Problems panel) | >= 2.2.0 |
+
+Features are **capability-probed** and degrade gracefully. If a subcommand doesn't exist on your CLI version, the corresponding UI simply won't appear.
+
+**Version convention:** Extension version tracks Governor's major/minor baseline. Extension `2.2.x` targets Governor `2.2.x`. Patch versions drift independently.
+
+---
+
 ## What you get
 
-### Diagnostics (Problems panel)
+### Doctor Diagnostics (Problems panel)
+`governor doctor --json` results mapped to VS Code Problems panel. Non-ok subsystem checks appear as warnings/errors. Click "More info" to open the full doctor report.
+
+Polls every 60s (configurable). Overlap guard prevents stacking. Churn detection avoids UI flicker when nothing changed.
+
+### Security + Continuity Diagnostics
 Security + continuity findings inline via `governor check`. Squiggles, severity icons, suggestions.
+
+### Correlator Status Bar + Capture Alerts
+K-vector (T/F/A/C) in the status bar. Capture detection with hysteresis — persistent Problems panel entry after N consecutive captured polls.
 
 ### State TreeView (sidebar)
 Structured view of governor state via `governor state --json --schema v2`:
@@ -27,6 +51,8 @@ Structured view of governor state via `governor state --json --schema v2`:
 | **Session** | Mode, authority level, jurisdiction, constraints |
 | **Regime** | ELASTIC/WARM/DUCTILE/UNSTABLE, boil mode |
 | **Stability** | Rejection rate, claim churn, contradiction density, drift alert |
+| **Scope** | Run scope, grants, contracts, escalation count |
+| **Scars** | Active scars (hard/soft), shields, failure provenance |
 
 ### Code Actions (quick fixes)
 - Apply suggestion
@@ -43,6 +69,7 @@ Optional debounced on-type checking (off by default). Skips large files, exclude
 ### Status Bar
 - Governor health: pass/warn/error icon + current profile
 - Selfcheck: OK or failure/warning count with item details on hover
+- Correlator: K-vector compact display, capture alert
 
 ---
 
@@ -55,6 +82,7 @@ Quick sanity:
 
 ```bash
 governor selfcheck
+governor doctor --json
 governor state --json --schema v2 | head
 ```
 
@@ -64,12 +92,22 @@ If those fail, the extension will fail in more creative ways.
 
 ## Installation
 
+### From GitHub Releases (.vsix)
+
+Download the `.vsix` from [Releases](https://github.com/unpingable/vscode-governor/releases), then:
+
+```
+VS Code → Extensions → ⋯ → Install from VSIX...
+```
+
+### From source
+
 ```bash
 git clone https://github.com/unpingable/vscode-governor.git
 cd vscode-governor
 npm ci
 npm run build
-npm run package    # produces .vsix
+npx @vscode/vsce package    # produces .vsix
 # VS Code → Extensions → Install from VSIX
 ```
 
@@ -83,15 +121,19 @@ npm run package    # produces .vsix
 | `Governor: Check Selection` | — | Check selected text via stdin |
 | `Governor: Check Current File Now` | — | Force immediate check |
 | `Governor: Toggle Real-time Checking` | Ctrl+Shift+Alt+G | Enable/disable on-type checking |
+| `Governor: Run Doctor Checks` | — | Run `governor doctor`, update Problems panel |
 | `Governor: Set Profile` | — | Switch intent profile (greenfield/established/production/hotfix/refactor) |
 | `Governor: Clear Intent` | — | Remove current profile |
 | `Governor: Show Intent` | — | Display intent + provenance in output |
 | `Governor: Compare with Other Models` | — | Show last interferometry comparison |
 | `Governor: Show Self-Check Details` | — | Full selfcheck report |
+| `Governor: Show Correlator Status` | — | K-vector + capture indicator details |
+| `Governor: Show Scope Status and Grants` | — | Scope axes, contracts, grants |
+| `Governor: Show Scar Status` | — | Scars, shields, health |
 | `Governor: Show Receipt Detail` | — | Receipt + evidence bundle |
+| `Governor: Run Preflight Checks` | — | Explicit preflight run |
 | `Governor: Refresh State` | — | Reload all state views |
 | `Governor: Show Output` | — | Open governor output channel |
-| `Governor: Show Detail` | — | Dump JSON to output channel |
 
 ---
 
@@ -108,6 +150,15 @@ npm run package    # produces .vsix
 | `governor.hover.enabled` | `true` | Show context on hover |
 | `governor.codeActions.enabled` | `true` | Quick fix suggestions |
 | `governor.interferometry.autoCompare` | `false` | Auto-run compare after interferometry |
+| `governor.backgroundActivity.enabled` | `true` | Master kill switch for all background activity |
+| `governor.preflight.enabled` | `true` | Run preflight on workspace open |
+| `governor.preflight.agent` | `"claude"` | Agent type for preflight |
+| `governor.correlator.enabled` | `true` | Enable correlator polling |
+| `governor.correlator.pollIntervalMs` | `30000` | Correlator poll interval (ms) |
+| `governor.correlator.captureThreshold` | `3` | Consecutive captured polls before alert |
+| `governor.correlator.clearThreshold` | `3` | Consecutive OK polls to clear alert |
+| `governor.doctor.enabled` | `true` | Enable doctor polling and Problems diagnostics |
+| `governor.doctor.pollIntervalMs` | `60000` | Doctor poll interval (ms) |
 
 ---
 
@@ -115,18 +166,20 @@ npm run package    # produces .vsix
 
 ```
 Governor CLI
-    ↓
+    |
 JSON stdout
-    ↓
-client.ts (spawn + JSON.parse)
-    ↓
-types.ts (CheckResult | GovernorViewModelV2)
-    ↓
-Extension  →  DiagnosticProvider  →  Problems panel
-           →  TreeProvider         →  Sidebar TreeView
-           →  HoverProvider        →  Hover tooltips
-           →  CodeActionProvider   →  Quick fixes
-           →  RealtimeChecker      →  Background checking
+    |
+client.ts (GovernorClient: spawn + JSON.parse + capability probe)
+    |
+types.ts (CheckResult | GovernorViewModelV2 | DoctorResult | CorrelatorStatus | ...)
+    |
+Extension  ->  DiagnosticProvider     ->  Problems panel (file checks)
+           ->  DoctorContentProvider  ->  Problems panel (subsystem health)
+           ->  CaptureAlertProvider   ->  Problems panel (correlator capture)
+           ->  TreeProvider           ->  Sidebar TreeView
+           ->  HoverProvider          ->  Hover tooltips
+           ->  CodeActionProvider     ->  Quick fixes
+           ->  RealtimeChecker        ->  Background checking
 ```
 
 The extension is a **non-authoritative client**. It renders what the CLI reports. It cannot override policy, mint receipts, or broaden scope.
@@ -141,31 +194,18 @@ Every UI surface maps to a CLI command. When the UI lies, re-ground in the termi
 |---------|------------|
 | Diagnostics | `governor check <path> --format json` |
 | Diagnostics (selection) | `governor check --stdin --format json` |
+| Doctor | `governor doctor --json` |
 | State TreeView | `governor state --json --schema v2` |
 | Intent | `governor intent show --json` / `intent set` / `intent clear` |
 | Overrides | `governor override list --json` |
 | Compare | `governor interferometry compare --last --json` |
 | Selfcheck | `governor selfcheck --json [--full]` |
+| Correlator | `governor correlator status --json` |
+| Scope | `governor scope status --json` / `scope grants --json` |
+| Scars | `governor scar list --json` / `scar history --json` |
+| Preflight | `governor preflight --agent claude --json` |
 | Receipts | `governor receipts --json [--gate X --verdict Y --last N]` |
 | Receipt detail | `governor receipts --id <id> --evidence --json` |
-
----
-
-## What's not wired yet
-
-The governor CLI has shipped major subsystems since this extension was last updated. These exist in the CLI but don't have extension UI yet:
-
-| Feature | CLI | Gap |
-|---------|-----|-----|
-| **Preflight** | `governor preflight --agent claude --json` | No run-on-open, no panel |
-| **Scope Governor** | `governor scope check <tool> --axis file=<path>` | No scope view, no file-level gating |
-| **Correlator / Capture Detection** | `governor correlator status --json` | No K-vector status bar, no capture alerts |
-| **Receipt Kernel** | `governor kernel verify --run <id>` | No invariant verdict view |
-| **Oracle Evidence** | `governor gate check --oracle pytest` | No oracle status display |
-| **Scar History** | `governor scar history` | No constraint learning view |
-| **Drift Detection** | `governor drift status` | No drift alert integration |
-
-See [V7 Plan](V7_PLAN.md) for the roadmap to close these gaps.
 
 ---
 
@@ -181,6 +221,11 @@ See [V7 Plan](V7_PLAN.md) for the roadmap to close these gaps.
 - Enable verbose logging via the Governor output channel
 - Check stderr — non-JSON on stdout is a bug in governor, not the extension
 
+### Doctor shows nothing / "not available"
+- Check the Governor output channel for "Doctor diagnostics not available"
+- Upgrade governor CLI to >= 2.2.0
+- Features are capability-probed: if `governor doctor --help` fails, doctor UI is silently disabled
+
 ### Extension feels stale vs CLI behavior
 - The extension is a renderer. If CLI JSON schema changes, the extension must update
 - Run `Governor: Refresh State` to force a re-fetch
@@ -194,8 +239,8 @@ npm ci
 npm run build       # Build with esbuild
 npm run watch       # Watch mode
 npm run lint        # TypeScript type check
-npm run test        # Run tests
-npm run package     # Package as .vsix
+npm run test        # Run tests (176 tests)
+npx @vscode/vsce package   # Package as .vsix
 ```
 
 ---

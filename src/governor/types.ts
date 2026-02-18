@@ -455,6 +455,23 @@ export interface FailureEventView {
 }
 
 // =========================================================================
+// V7.1: Doctor types (`governor doctor --json`)
+// =========================================================================
+
+export interface DoctorCheck {
+  name: string;
+  status: "ok" | "info" | "warn" | "error";
+  summary: string;
+  next_commands: string[];
+}
+
+export interface DoctorResult {
+  schema_version: number;
+  checks: DoctorCheck[];
+  counts: { ok: number; info: number; warn: number; error: number };
+}
+
+// =========================================================================
 // Governor ViewModel V2 (canonical state)
 // =========================================================================
 

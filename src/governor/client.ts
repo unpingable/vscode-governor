@@ -12,6 +12,7 @@ import type {
   OverrideView, CodeDivergenceReportView, SelfcheckResult,
   GateReceiptView, PreflightResult, CorrelatorStatus,
   ScopeStatusView, ScopeGrantView, ScarListResult, FailureEventView,
+  DoctorResult,
 } from "./types";
 
 // =========================================================================
@@ -47,6 +48,7 @@ export interface CapabilitySet {
   oracle: boolean;
   scar: boolean;
   drift: boolean;
+  doctor: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -208,19 +210,20 @@ export class GovernorClient {
   }
 
   private async probeAll(): Promise<CapabilitySet> {
-    const [preflight, correlator, scope, kernel, scar, drift] = await Promise.all([
+    const [preflight, correlator, scope, kernel, scar, drift, doctor] = await Promise.all([
       this.probe(["preflight", "--help"]),
       this.probe(["correlator", "--help"]),
       this.probe(["scope", "--help"]),
       this.probe(["kernel", "--help"]),
       this.probe(["scar", "--help"]),
       this.probe(["drift", "--help"]),
+      this.probe(["doctor", "--help"]),
     ]);
 
     // Oracle is a flag on gate check, not a subcommand — probe differently
     const oracle = await this.probe(["gate", "check", "--help"]);
 
-    return { preflight, correlator, scope, kernel, oracle, scar, drift };
+    return { preflight, correlator, scope, kernel, oracle, scar, drift, doctor };
   }
 
   hasCapability(name: keyof CapabilitySet): boolean {
@@ -369,6 +372,28 @@ export class GovernorClient {
   }
 
   // =========================================================================
+  // V7.1: Doctor
+  // =========================================================================
+
+  /**
+   * Run governor doctor and parse JSON output.
+   *
+   * `governor doctor --json` exits 0 for all-ok, 1 for findings present.
+   * Both are valid — we parse JSON from either. Exit >= 2 is a real error.
+   */
+  async runDoctor(): Promise<DoctorResult> {
+    const result = await this.execute(["doctor", "--json"], { timeout: LONG_TIMEOUT_MS });
+    if (result.exitCode >= 2) {
+      throw new Error(`governor doctor exited with code ${result.exitCode}: ${result.stderr || result.stdout}`);
+    }
+    try {
+      return JSON.parse(result.stdout) as DoctorResult;
+    } catch {
+      throw new Error(`Failed to parse governor doctor output: ${result.stdout.slice(0, 200)}`);
+    }
+  }
+
+  // =========================================================================
   // Cleanup
   // =========================================================================
 
@@ -465,4 +490,8 @@ export function getScarList(opts: GovernorClientConfig): Promise<import("./types
 
 export function getScarHistory(opts: GovernorClientConfig, limit = 20): Promise<import("./types").FailureEventView[]> {
   return new GovernorClient(opts).getScarHistory(limit);
+}
+
+export function runDoctor(opts: GovernorClientConfig): Promise<import("./types").DoctorResult> {
+  return new GovernorClient(opts).runDoctor();
 }

@@ -14,8 +14,8 @@ jest.mock("child_process", () => ({
   spawn: mockSpawn,
 }));
 
-import { checkFile, checkStdin, runSelfcheck, getReceipts, getReceiptDetail, getScopeStatus, getScopeGrants, getScarList, getScarHistory } from "../../governor/client";
-import type { CheckResult, SelfcheckResult, GateReceiptView, ScopeStatusView, ScopeGrantView, ScarListResult, FailureEventView } from "../../governor/types";
+import { GovernorClient, checkFile, checkStdin, runSelfcheck, getReceipts, getReceiptDetail, getScopeStatus, getScopeGrants, getScarList, getScarHistory } from "../../governor/client";
+import type { CheckResult, SelfcheckResult, GateReceiptView, ScopeStatusView, ScopeGrantView, ScarListResult, FailureEventView, DoctorResult } from "../../governor/types";
 
 function createMockProcess(
   stdoutData: string,
@@ -534,5 +534,75 @@ describe("getScarHistory", () => {
     expect(result).toHaveLength(1);
     expect(result[0].event_id).toBe("ev1");
     expect(result[0].surprise_ratio).toBe(0.1);
+  });
+});
+
+// =========================================================================
+// V7.1: runDoctor
+// =========================================================================
+
+describe("runDoctor", () => {
+  beforeEach(() => { mockSpawn.mockReset(); });
+
+  const doctorResult: DoctorResult = {
+    schema_version: 1,
+    checks: [
+      { name: "envelope", status: "ok", summary: "envelope set", next_commands: [] },
+      { name: "scars", status: "warn", summary: "3 hard scars", next_commands: ["governor scar list"] },
+    ],
+    counts: { ok: 1, info: 0, warn: 1, error: 0 },
+  };
+
+  it("spawns governor doctor --json", async () => {
+    const proc = createMockProcess(JSON.stringify(doctorResult), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const client = new GovernorClient(defaultOpts);
+    await client.runDoctor();
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "governor",
+      ["doctor", "--json"],
+      expect.objectContaining({ cwd: "/tmp" })
+    );
+  });
+
+  it("parses result on exit 0 (all ok)", async () => {
+    const proc = createMockProcess(JSON.stringify(doctorResult), "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const client = new GovernorClient(defaultOpts);
+    const result = await client.runDoctor();
+    expect(result.schema_version).toBe(1);
+    expect(result.checks).toHaveLength(2);
+    expect(result.counts.ok).toBe(1);
+    expect(result.counts.warn).toBe(1);
+  });
+
+  it("parses result on exit 1 (findings present)", async () => {
+    const proc = createMockProcess(JSON.stringify(doctorResult), "", 1);
+    mockSpawn.mockReturnValue(proc);
+
+    const client = new GovernorClient(defaultOpts);
+    const result = await client.runDoctor();
+    // Key test: exit 1 is NOT an error for doctor
+    expect(result.checks).toHaveLength(2);
+    expect(result.counts.warn).toBe(1);
+  });
+
+  it("rejects on exit >= 2", async () => {
+    const proc = createMockProcess("", "internal error", 2);
+    mockSpawn.mockReturnValue(proc);
+
+    const client = new GovernorClient(defaultOpts);
+    await expect(client.runDoctor()).rejects.toThrow(/exited with code 2/);
+  });
+
+  it("rejects on invalid JSON", async () => {
+    const proc = createMockProcess("not json at all", "", 0);
+    mockSpawn.mockReturnValue(proc);
+
+    const client = new GovernorClient(defaultOpts);
+    await expect(client.runDoctor()).rejects.toThrow(/Failed to parse/);
   });
 });

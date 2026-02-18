@@ -25,7 +25,7 @@ export enum DiagnosticSeverity {
 }
 
 export class Diagnostic {
-  public code: string | number | undefined;
+  public code: string | number | { value: string | number; target: Uri } | undefined;
   public source: string | undefined;
 
   constructor(

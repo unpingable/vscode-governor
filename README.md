@@ -16,10 +16,11 @@ This extension does **not** re-implement governance logic. It shells out to the 
 | Correlator / capture alerts | >= 2.1.0 |
 | Scope view, scar history | >= 2.1.0 |
 | Doctor diagnostics (Problems panel) | >= 2.2.0 |
+| Lane routing, operator dashboard | >= 2.3.0 |
 
 Features are **capability-probed** and degrade gracefully. If a subcommand doesn't exist on your CLI version, the corresponding UI simply won't appear.
 
-**Version convention:** Extension version tracks Governor's major/minor baseline. Extension `2.2.x` targets Governor `2.2.x`. Patch versions drift independently.
+**Version convention:** Extension version tracks Governor's major/minor baseline. Extension `2.3.x` targets Governor `2.3.x`. Patch versions drift independently. See `COMPAT.md` for contract version details.
 
 ---
 

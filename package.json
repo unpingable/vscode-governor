@@ -2,7 +2,8 @@
   "name": "vscode-governor",
   "displayName": "Agent Governor",
   "description": "Security and continuity checking for agentic coding tools",
-  "version": "2.2.0",
+  "version": "2.3.0",
+  "author": "James Beck",
   "publisher": "agent-governor",
   "license": "Apache-2.0",
   "engines": {
